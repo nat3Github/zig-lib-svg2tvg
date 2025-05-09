@@ -259,7 +259,7 @@ pub const NodeMaker = struct {
     cmds_len: usize,
     seg_len: usize,
     flushed: bool = true,
-    lw: f32 = 1,
+    lw: ?f32 = null,
 
     pub fn init(
         m: make_node,
@@ -332,6 +332,11 @@ pub const NodeMaker = struct {
         const nd = self.m.circular_arc(self.lw, r, large_arc, sweep_ccw, p);
         try self.cmds.append(nd);
     }
+    pub fn current_segments(self: *const @This()) []Segment {
+        const segm = self.seg.items[self.seg_len..self.seg.items.len];
+        self.seg_len = self.seg.items.len;
+        return segm;
+    }
 };
 
 pub const make_node = struct {
@@ -352,7 +357,7 @@ pub const make_node = struct {
         self.__pos = p;
         self.__c = null;
     }
-    pub fn close(self: *make_node, lw: f32) Node {
+    pub fn close(self: *make_node, lw: ?f32) Node {
         self.__pos = self.__first;
         self.__c = null;
         return Node{ .close = NodeData(void){
@@ -360,23 +365,23 @@ pub const make_node = struct {
             .line_width = lw,
         } };
     }
-    pub fn line(self: *make_node, lw: f32, p: Point) Node {
+    pub fn line(self: *make_node, lw: ?f32, p: Point) Node {
         self.__pos = p;
         return Node{ .line = NodeData(Point){
             .data = self.vw.point_from(p),
             .line_width = lw,
         } };
     }
-    pub fn vert(self: *make_node, lw: f32, f: f32) Node {
+    pub fn vert(self: *make_node, lw: ?f32, f: f32) Node {
         self.__pos.y += f;
         return self.line(lw, self.__pos);
     }
-    pub fn horiz(self: *make_node, lw: f32, f: f32) Node {
+    pub fn horiz(self: *make_node, lw: ?f32, f: f32) Node {
         self.__pos.x += f;
         return self.line(lw, self.__pos);
     }
 
-    pub fn quadratic_bezier_curve_to(self: *make_node, lw: f32, c: Point, p: Point) Node {
+    pub fn quadratic_bezier_curve_to(self: *make_node, lw: ?f32, c: Point, p: Point) Node {
         self.__pos = p;
         self.__c = c;
         return Node{ .quadratic_bezier = NodeData(Node.QuadraticBezier){
@@ -387,7 +392,7 @@ pub const make_node = struct {
             .line_width = lw,
         } };
     }
-    pub fn curve_to(self: *make_node, lw: f32, c1: Point, c2: Point, p: Point) Node {
+    pub fn curve_to(self: *make_node, lw: ?f32, c1: Point, c2: Point, p: Point) Node {
         self.__pos = p;
         self.__c = c2;
 
@@ -401,7 +406,7 @@ pub const make_node = struct {
         } };
     }
 
-    pub fn smooth_quadratic_bezier_curve_to(self: *make_node, lw: f32, p: Point) Node {
+    pub fn smooth_quadratic_bezier_curve_to(self: *make_node, lw: ?f32, p: Point) Node {
         self.__pos = p;
 
         return Node{ .quadratic_bezier = NodeData(Node.QuadraticBezier){
@@ -412,7 +417,7 @@ pub const make_node = struct {
             .line_width = lw,
         } };
     }
-    pub fn smooth_curve_to(self: *make_node, lw: f32, c2: Point, p: Point) Node {
+    pub fn smooth_curve_to(self: *make_node, lw: ?f32, c2: Point, p: Point) Node {
         self.__pos = p;
         self.__c = c2;
 
@@ -425,7 +430,7 @@ pub const make_node = struct {
             .line_width = lw,
         } };
     }
-    pub fn elliptical_arc(self: *make_node, lw: f32, rx: f32, ry: f32, rotation: f32, large_arc: bool, sweep_ccw: bool, p: Point) Node {
+    pub fn elliptical_arc(self: *make_node, lw: ?f32, rx: f32, ry: f32, rotation: f32, large_arc: bool, sweep_ccw: bool, p: Point) Node {
         self.__pos = p;
         return Node{ .arc_ellipse = NodeData(Node.ArcEllipse){
             .data = Node.ArcEllipse{
@@ -439,7 +444,7 @@ pub const make_node = struct {
             .line_width = lw,
         } };
     }
-    pub fn circular_arc(self: *make_node, lw: f32, r: f32, large_arc: bool, sweep_ccw: bool, p: Point) Node {
+    pub fn circular_arc(self: *make_node, lw: ?f32, r: f32, large_arc: bool, sweep_ccw: bool, p: Point) Node {
         self.__pos = p;
         return Node{
             .arc_circle = NodeData(Node.ArcCircle){
@@ -983,36 +988,22 @@ pub fn SvgConverter(W: type) type {
         pub fn write_path(
             self: *@This(),
             pathlist: []const Segment,
-            fill: ?Color,
-            stroke: ?Color,
-            stroke_width: ?f32,
+            properties: *const InheritableProperties,
         ) !void {
-            if (stroke) |col| {
-                const col_idx = self.colormap.get(.fromColor(col)).?;
-                try self.builder.writeDrawPath(.{ .flat = col_idx }, stroke_width orelse default.stroke_width, pathlist);
-            }
+            const stroke = properties.stroke;
+            const stoke_width = properties.@"stroke-width";
+            const fill = properties.stroke;
+
             if (fill) |col| {
                 const col_idx = self.colormap.get(.fromColor(col)).?;
                 try self.builder.writeFillPath(.{ .flat = col_idx }, pathlist);
             }
+            if (stroke) |col| {
+                const col_idx = self.colormap.get(.fromColor(col)).?;
+                try self.builder.writeDrawPath(.{ .flat = col_idx }, stoke_width orelse default.stroke_width, pathlist);
+            }
         }
 
-        pub fn write_path_T(
-            self: *@This(),
-            pathlist: []const Segment,
-            t: anytype,
-        ) !void {
-            const T = @TypeOf(t);
-            if (comptime utils.has_field(T, "stroke") and
-                utils.has_field(T, "fill") and
-                utils.has_field(T, "stroke-width"))
-            {
-                const fill = @field(t, "fill");
-                const stroke = @field(t, "stroke");
-                const stroke_width = @field(t, "stroke-width");
-                try self.write_path(pathlist, fill, stroke, stroke_width);
-            } else @compileError("why U call this?");
-        }
         pub fn parse_colors_and_svg(self: *@This(), svg_bytes: []const u8) !void {
             const alloc = self.arena1.allocator();
             var fbuffs = std.io.fixedBufferStream(svg_bytes);
@@ -1136,14 +1127,15 @@ pub fn SvgConverter(W: type) type {
                             // , .{
                             //     std.zig.fmtEscapes(element_name.local),
                             // });
+                            const garbage_alloc = self.arena2.allocator();
 
                             const att_count = reader.reader.attributeCount();
                             const att_names = try self.arena2.allocator().alloc([]const u8, att_count);
                             const att_vals = try self.arena2.allocator().alloc([]const u8, att_count);
 
                             for (att_names, att_vals, 0..) |*n, *v, i| {
-                                n.* = try self.arena2.allocator().dupe(u8, reader.attributeNameNs(i).local);
-                                v.* = try self.arena2.allocator().dupe(u8, reader.attributeValue(i));
+                                n.* = try garbage_alloc.dupe(u8, reader.attributeNameNs(i).local);
+                                v.* = try garbage_alloc.dupe(u8, reader.attributeValue(i));
                             }
                             // Container
                             if (std.mem.eql(u8, "g", element_tag)) {
@@ -1154,36 +1146,37 @@ pub fn SvgConverter(W: type) type {
                             // Drawing Primitives
                             if (std.mem.eql(u8, "rect", element_tag)) {
                                 var element = Rect{};
-                                try element.parse(att_names, att_vals);
+                                try element.parse(self.maker, att_names, att_vals);
                                 top_mut.override_from(element);
+                                self.write_path(self.maker.current_segments(), top_mut);
                             } else if (std.mem.eql(u8, "circle", element_tag)) {
                                 var element = Circle{};
-                                try element.parse(att_names, att_vals);
+                                try element.parse(self.maker, att_names, att_vals);
                                 top_mut.override_from(element);
                             } else if (std.mem.eql(u8, "ellipse", element_tag)) {
                                 var element = Ellipse{};
-                                try element.parse(att_names, att_vals);
+                                try element.parse(self.maker, att_names, att_vals);
                                 top_mut.override_from(element);
                             } else if (std.mem.eql(u8, "line", element_tag)) {
                                 var element = Line{};
-                                try element.parse(att_names, att_vals);
+                                try element.parse(self.maker, att_names, att_vals);
                                 top_mut.override_from(element);
                             } else if (std.mem.eql(u8, "polyline", element_tag)) {
                                 var element = PolyLine{};
-                                try element.parse(att_names, att_vals);
+                                try element.parse(self.maker, garbage_alloc, att_names, att_vals);
                                 top_mut.override_from(element);
                             } else if (std.mem.eql(u8, "polygon", element_tag)) {
                                 var element = Polygon{};
-                                try element.parse(att_names, att_vals);
+                                try element.parse(self.maker, garbage_alloc, att_names, att_vals);
                                 top_mut.override_from(element);
-                            } else if (std.mem.eql(u8, "path", element_tag)) {
+                            } else if (std.mem.eql(u8, "path", garbage_alloc, element_tag)) {
                                 var element = SvgPath{};
-                                try element.parse();
+                                try element.parse(self.maker, garbage_alloc, att_names, att_vals);
                                 top_mut.override_from(element);
                             } else {
                                 std.log.warn("unrecognized element", .{element_tag});
                             }
-
+                            // dispose of the garbage
                             _ = self.arena2.reset(.retain_capacity);
                         }
                     },
