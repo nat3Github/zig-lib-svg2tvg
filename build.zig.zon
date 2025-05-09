@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: MPL-2.0
+//   Copyright © 2024 Chris Marchesi
+.{
+    .name = .svg2tvg,
+    .fingerprint = 0x15ec8a64b919931e,
+    .version = "0.0.0",
+    .dependencies = .{
+        .xml = .{
+            .url = "https://github.com/ianprime0509/zig-xml/archive/c2b02045810108e7a807855dc592157f44d32fb1.zip",
+            .hash = "xml-0.1.0-ZTbP35VkAgAp2cDlvsPuL7SWVZWwPg-V99LmVRSHbCtL",
+        },
+        .icons = .{ .path = "../icons" },
+        .tvg_sdk = .{ .path = "../tvg-sdk" },
+        .image = .{ .path = "../image" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
