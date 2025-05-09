@@ -465,22 +465,36 @@ const Svg = struct {
     y: f32 = 0,
     width: ?f32 = null, // default is auto ?! wtf is auto
     height: ?f32 = null, // default is auto ?! wtf is auto
-    viewBox: ViewBox,
+    viewBox: ViewBox = ViewBox{},
     // preserveAspectRatio="How the svg fragment is deformed if it is displayed with a different aspect ratio". Can be none| xMinYMin| xMidYMin| xMaxYMin| xMinYMid| xMidYMid| xMaxYMid| xMinYMax| xMidYMax| xMaxYMax. Default is xMidYMid
-    pub fn parse(self: *@This(), alloc: Allocator, att: []const u8, val: []const u8) !void {
-        if (std.mem.eql(u8, att, "width")) {
-            const v = try std.fmt.parseFloat(f32, val);
-            self.width = v;
-        }
-        if (std.mem.eql(u8, att, "height")) {
-            const v = try std.fmt.parseFloat(f32, val);
-            self.height = v;
-        }
-        if (try utils.parsePointList(alloc, "viewBox", att, val)) |res| {
-            self.viewBox.x = res.items[0].x;
-            self.viewBox.y = res.items[0].y;
-            self.viewBox.w = res.items[1].x;
-            self.viewBox.h = res.items[1].y;
+    fill: ?Color = null,
+    @"fill-opacity": ?f32 = null, // between 0 and 1
+    stroke: ?Color = null,
+    @"stroke-width": ?f32 = null,
+    @"stroke-opacity": ?f32 = null, // between 0 and 1
+    pub fn parse(
+        self: *@This(),
+        alloc: Allocator,
+        att: []const []const u8,
+        val: []const []const u8,
+    ) !void {
+        const Def = struct {
+            const width: ?f32 = undefined;
+            const height: ?f32 = undefined;
+            const fill: ?Color = undefined;
+            const @"fill-opacity": ?f32 = undefined;
+            const stroke: ?Color = undefined;
+            const @"stroke-width": ?f32 = undefined;
+            const @"stroke-opacity": ?f32 = undefined;
+        };
+        for (att, val) |a, v| {
+            try utils.auto_parse_def(@This(), self, Def, a, v);
+            if (try utils.parsePointList(alloc, "viewBox", att, val)) |res| {
+                self.viewBox.x = res.items[0].x;
+                self.viewBox.y = res.items[0].y;
+                self.viewBox.w = res.items[1].x;
+                self.viewBox.h = res.items[1].y;
+            }
         }
     }
     pub fn check(self: *@This()) !void {
@@ -942,14 +956,14 @@ pub fn SvgConverter(W: type) type {
         cmds: std.ArrayList(Node),
         seg: std.ArrayList(Segment),
 
-        pub fn init(alloc: Allocator, writer: W) @This() {
+        pub fn init(alloc: Allocator, writer: W) !@This() {
             return @This(){
                 .builder = Builder{ .writer = writer },
                 .arena1 = std.heap.ArenaAllocator.init(alloc),
                 .arena2 = std.heap.ArenaAllocator.init(alloc),
                 .colormap = ColMap.init(alloc),
-                .cmds = try std.ArrayList(Node).init(alloc),
-                .seg = try std.ArrayList(Segment).init(alloc),
+                .cmds = std.ArrayList(Node).init(alloc),
+                .seg = std.ArrayList(Segment).init(alloc),
             };
         }
         pub fn deinit(self: *@This()) @This() {
@@ -1007,10 +1021,10 @@ pub fn SvgConverter(W: type) type {
                             const att_vals = try alloc.alloc([]const u8, att_count);
                             for (att_names, att_vals, 0..) |*n, *v, i| {
                                 n.* = try alloc.dupe(u8, reader.attributeNameNs(i).local);
-                                v.* = try alloc.dupe(u8, reader.attributeValue(i));
+                                v.* = try alloc.dupe(u8, try reader.attributeValue(i));
                             }
                             var svg = Svg{};
-                            try svg.parse(att_names, att_vals);
+                            try svg.parse(alloc, att_names, att_vals);
                             try svg.check();
                             self.svg = svg;
                         }
@@ -1167,7 +1181,7 @@ pub fn SvgConverter(W: type) type {
 }
 
 pub fn tvg_from_svg(alloc: Allocator, writer: anytype, svg_bytes: []const u8) !void {
-    var con = try SvgConverter(@TypeOf(writer)).init(alloc);
+    var con = try SvgConverter(@TypeOf(writer)).init(alloc, writer);
     try con.run(svg_bytes);
 }
 
