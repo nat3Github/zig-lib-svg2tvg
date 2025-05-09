@@ -3,6 +3,7 @@ const assert = std.debug.assert;
 const expect = std.debug.expect;
 const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
+const math = std.math;
 // const root = @import("../root.zig");
 
 const svg_parsing = @import("svg.zig");
@@ -24,7 +25,7 @@ const Image = @import("image");
 const ImageWrapper = struct {
     width: i64,
     height: i64,
-    img: Image,
+    img: *Image,
     pub fn setPixel(self: *@This(), x: i64, y: i64, color: tvg.Color) void {
         const col = color.toRgba8();
         const pix: Image.Pixel = .init_from_u8_slice(&col);
@@ -41,7 +42,7 @@ pub fn Stack(T: type) type {
                 .data = try alloc.alloc(T, size),
             };
         }
-        pub fn deinit(self: *@This(), alloc: Allocator) !@This() {
+        pub fn deinit(self: *@This(), alloc: Allocator) void {
             alloc.free(self.data);
         }
         pub fn push(self: *@This(), t: T) !void {
@@ -88,8 +89,8 @@ const WidthHeight = struct {
     h: ?f32 = null,
 };
 const ViewBox = struct {
-    x: ?f32 = 0,
-    y: ?f32 = 0,
+    x: f32 = 0,
+    y: f32 = 0,
     w: ?f32 = null,
     h: ?f32 = null,
     fn transform(
@@ -99,8 +100,8 @@ const ViewBox = struct {
         point: Point,
     ) Point {
         return Point{
-            .x = (point.x - self.x) * (width / self.w),
-            .y = (point.y - self.y) * (height / self.h),
+            .x = (point.x - self.x) * (width / self.w.?),
+            .y = (point.y - self.y) * (height / self.h.?),
         };
     }
 };
@@ -140,9 +141,11 @@ const InheritableProperties = struct {
         const T = @TypeOf(t);
         inline for (@typeInfo(InheritableProperties).@"struct".fields) |f| {
             if (comptime utils.has_field(T, f.name)) {
-                comptime assert(f.type == @TypeOf(@field(T, f.name)));
-                if (@field(t, f.name)) |fval| {
-                    @field(self, f.name) = fval;
+                // @compileLog(T, f.name);
+                if (comptime f.type == @TypeOf(@field(t, f.name))) {
+                    if (@field(t, f.name)) |fval| {
+                        @field(self, f.name) = fval;
+                    }
                 }
             }
         }
@@ -167,7 +170,7 @@ const SvgTag = enum(u8) {
     // marker,
 };
 pub const utils = struct {
-    pub fn has_field(T: type, comptime name: []const u8) T {
+    pub fn has_field(T: type, comptime name: []const u8) bool {
         comptime {
             for (@typeInfo(T).@"struct".fields) |field| {
                 if (std.mem.eql(u8, field.name, name)) return true;
@@ -179,12 +182,13 @@ pub const utils = struct {
         if (std.mem.eql(u8, property_name, att)) {
             return try std.fmt.parseFloat(f32, val);
         }
+        return null;
     }
     pub fn parsePointList(alloc: Allocator, property_name: []const u8, att: []const u8, val: []const u8) !?std.ArrayList(Point) {
         if (std.mem.eql(u8, property_name, att)) {
-            const list = std.ArrayList(Point).init(alloc);
+            var list = std.ArrayList(Point).init(alloc);
             var split = std.mem.splitAny(u8, val, " ");
-            var point = Point{};
+            var point = Point{ .x = 0, .y = 0 };
             var k: bool = true;
             while (split.next()) |n| {
                 const v = try std.fmt.parseFloat(f32, n);
@@ -195,16 +199,20 @@ pub const utils = struct {
             if (!k) return error.ListLenUneven;
             return list;
         }
+        return null;
     }
     pub fn parseColor(property_name: []const u8, att: []const u8, val: []const u8) !?Color {
         if (std.mem.eql(u8, property_name, att)) {
-            return svg_parsing.Color.parse(val).color;
+            return Color_from(svg_parsing.Color.parse(val).color, 1.0);
         }
+        return null;
     }
     pub fn auto_parse_def(T: type, self: *T, Def: type, att: []const u8, val: []const u8) !void {
-        inline for (@typeInfo(Def).@"struct".decls) |decl| {
+        const decls = @typeInfo(Def).@"struct".decls;
+        if (comptime decls.len == 0) @compileLog(Def);
+        inline for (decls) |decl| {
             if (comptime has_field(T, decl.name)) {
-                const declT = @typeInfo(@field(Def, decl.name));
+                const declT = @TypeOf(@field(Def, decl.name));
                 if (comptime declT == f32 or declT == ?f32) {
                     const v = try parseFloat(decl.name, att, val);
                     if (v) |a| @field(self, decl.name) = a;
@@ -251,8 +259,8 @@ pub const NodeMaker = struct {
     pub fn flush(self: *NodeMaker) !void {
         if (self.flushed) return;
         self.flushed = true;
-        const cm = self.cmds.items[self.cmd_len..];
-        self.cmd_len = self.cmds.items.len;
+        const cm = self.cmds.items[self.cmds_len..];
+        self.cmds_len = self.cmds.items.len;
         const seg = Segment{
             .start = self.m.__first,
             .commands = cm,
@@ -262,8 +270,7 @@ pub const NodeMaker = struct {
     pub fn move(self: *NodeMaker, p: Point) !void {
         try self.flush();
         self.flushed = false;
-        const nd = self.m.move(p);
-        try self.cmds.append(nd);
+        self.m.move(p);
     }
     pub fn close(self: *NodeMaker) !void {
         const nd = self.m.close(self.lw);
@@ -291,11 +298,11 @@ pub const NodeMaker = struct {
         try self.cmds.append(nd);
     }
     pub fn smooth_quadratic_bezier_curve_to(self: *NodeMaker, p: Point) !void {
-        const nd = self.m.smooth_quadratic_bezier_curve_to(self.lw, p);
+        const nd = try self.m.smooth_quadratic_bezier_curve_to(self.lw, p);
         try self.cmds.append(nd);
     }
     pub fn smooth_curve_to(self: *NodeMaker, c2: Point, p: Point) !void {
-        const nd = self.m.smooth_curve_to(self.lw, c2, p);
+        const nd = try self.m.smooth_curve_to(self.lw, c2, p);
         try self.cmds.append(nd);
     }
     pub fn elliptical_arc(self: *NodeMaker, rx: f32, ry: f32, rotation: f32, large_arc: bool, sweep_ccw: bool, p: Point) !void {
@@ -306,7 +313,7 @@ pub const NodeMaker = struct {
         const nd = self.m.circular_arc(self.lw, r, large_arc, sweep_ccw, p);
         try self.cmds.append(nd);
     }
-    pub fn current_segments(self: *const @This()) []Segment {
+    pub fn current_segments(self: *@This()) []const Segment {
         const segm = self.seg.items[self.seg_len..self.seg.items.len];
         self.seg_len = self.seg.items.len;
         return segm;
@@ -317,13 +324,14 @@ pub const make_node = struct {
     __c: ?Point = null,
     __first: Point,
     __pos: Point,
-    vw: Svg,
+    vw: *const Svg,
 
-    pub fn init(p: Point) make_node {
+    pub fn init(vw: *const Svg, p: Point) make_node {
         return make_node{
             .__first = p,
             .__pos = p,
             .__c = null,
+            .vw = vw,
         };
     }
     pub fn move(self: *make_node, p: Point) void {
@@ -342,7 +350,7 @@ pub const make_node = struct {
     pub fn line(self: *make_node, lw: ?f32, p: Point) Node {
         self.__pos = p;
         return Node{ .line = NodeData(Point){
-            .data = self.vw.point_from(p),
+            .data = self.vw.transform(p),
             .line_width = lw,
         } };
     }
@@ -380,9 +388,8 @@ pub const make_node = struct {
         } };
     }
 
-    pub fn smooth_quadratic_bezier_curve_to(self: *make_node, lw: ?f32, p: Point) Node {
+    pub fn smooth_quadratic_bezier_curve_to(self: *make_node, lw: ?f32, p: Point) !Node {
         self.__pos = p;
-
         return Node{ .quadratic_bezier = NodeData(Node.QuadraticBezier){
             .data = Node.QuadraticBezier{
                 .c = self.vw.transform(self.__c orelse return error.NoPrevControlPoint),
@@ -391,13 +398,13 @@ pub const make_node = struct {
             .line_width = lw,
         } };
     }
-    pub fn smooth_curve_to(self: *make_node, lw: ?f32, c2: Point, p: Point) Node {
+    pub fn smooth_curve_to(self: *make_node, lw: ?f32, c2: Point, p: Point) !Node {
+        const c0 = self.vw.transform(reflect_point(self.__c orelse return error.NoPrevControlPoint, self.__pos));
         self.__pos = p;
         self.__c = c2;
-
         return Node{ .bezier = NodeData(Node.Bezier){
             .data = Node.Bezier{
-                .c0 = self.vw.transform(reflect_point(self.__c, self.__pos)),
+                .c0 = c0,
                 .c1 = self.vw.transform(c2),
                 .p1 = self.vw.transform(p),
             },
@@ -457,7 +464,7 @@ pub const ColorHash = struct {
     }
 };
 
-const ColMap = std.AutoArrayHashMap(ColorHash, usize);
+const ColMap = std.AutoArrayHashMap(ColorHash, u32);
 
 const Svg = struct {
     pub const xmlns = "http://www.w3.org/2000/svg";
@@ -479,17 +486,17 @@ const Svg = struct {
         val: []const []const u8,
     ) !void {
         const Def = struct {
-            const width: ?f32 = undefined;
-            const height: ?f32 = undefined;
-            const fill: ?Color = undefined;
-            const @"fill-opacity": ?f32 = undefined;
-            const stroke: ?Color = undefined;
-            const @"stroke-width": ?f32 = undefined;
-            const @"stroke-opacity": ?f32 = undefined;
+            pub const width: ?f32 = undefined;
+            pub const height: ?f32 = undefined;
+            pub const fill: ?Color = undefined;
+            pub const @"fill-opacity": ?f32 = undefined;
+            pub const stroke: ?Color = undefined;
+            pub const @"stroke-width": ?f32 = undefined;
+            pub const @"stroke-opacity": ?f32 = undefined;
         };
         for (att, val) |a, v| {
             try utils.auto_parse_def(@This(), self, Def, a, v);
-            if (try utils.parsePointList(alloc, "viewBox", att, val)) |res| {
+            if (try utils.parsePointList(alloc, "viewBox", a, v)) |res| {
                 self.viewBox.x = res.items[0].x;
                 self.viewBox.y = res.items[0].y;
                 self.viewBox.w = res.items[1].x;
@@ -504,14 +511,14 @@ const Svg = struct {
             self.viewBox.w = self.width;
         }
     }
-    pub fn transform(self: *@This(), pp: Point) Point {
+    pub fn transform(self: *const @This(), pp: Point) Point {
         const p = Point{
             .x = @floatCast(pp.x),
             .y = @floatCast(pp.y),
         };
-        return self.viewBox.transform(@floatFromInt(self.width.?), @floatFromInt(self.height.?), p);
+        return self.viewBox.transform(self.width.?, self.height.?, p);
     }
-    pub fn point_from(self: *@This(), coord: svg_parsing.CoordinatePair) Point {
+    pub fn point_from(self: *const @This(), coord: svg_parsing.CoordinatePair) Point {
         const p = Point{
             .x = @floatCast(coord.coordinates[0].number.value),
             .y = @floatCast(coord.coordinates[1].number.value),
@@ -557,25 +564,26 @@ const Rect = struct {
         val: []const []const u8,
     ) !void {
         const Def = struct {
-            const width: ?f32 = undefined;
-            const height: ?f32 = undefined;
-            const x: f32 = undefined;
-            const y: f32 = undefined;
-            const rx: f32 = undefined;
-            const ry: f32 = undefined;
-            const fill: ?Color = undefined;
-            const @"fill-opacity": ?f32 = undefined;
-            const stroke: ?Color = undefined;
-            const @"stroke-width": ?f32 = undefined;
-            const @"stroke-opacity": ?f32 = undefined;
+            pub const width: ?f32 = undefined;
+            pub const height: ?f32 = undefined;
+            pub const x: f32 = undefined;
+            pub const y: f32 = undefined;
+            pub const rx: f32 = undefined;
+            pub const ry: f32 = undefined;
+            pub const fill: ?Color = undefined;
+            pub const @"fill-opacity": ?f32 = undefined;
+            pub const stroke: ?Color = undefined;
+            pub const @"stroke-width": ?f32 = undefined;
+            pub const @"stroke-opacity": ?f32 = undefined;
         };
         for (att, val) |a, v| {
             try utils.auto_parse_def(@This(), self, Def, a, v);
         }
         const lw = default.or_stroke_width(self.@"stroke-width");
         maker.lw = lw;
-        const yline_len = @min(0, self.height - self.ry * 2);
-        const xline_len = @min(0, self.width - self.rx * 2);
+        if (self.width == null or self.height == null) return error.RectWithoutDimensions;
+        const yline_len = @min(0, self.height.? - self.ry * 2);
+        const xline_len = @min(0, self.width.? - self.rx * 2);
         var p = Point{
             .x = self.x + self.rx,
             .y = self.y,
@@ -620,14 +628,14 @@ const Circle = struct {
         val: []const []const u8,
     ) !void {
         const Def = struct {
-            const r: ?f32 = undefined;
-            const cx: f32 = undefined;
-            const cy: f32 = undefined;
-            const fill: ?Color = undefined;
-            const @"fill-opacity": ?f32 = undefined;
-            const stroke: ?Color = undefined;
-            const @"stroke-width": ?f32 = undefined;
-            const @"stroke-opacity": ?f32 = undefined;
+            pub const r: ?f32 = undefined;
+            pub const cx: f32 = undefined;
+            pub const cy: f32 = undefined;
+            pub const fill: ?Color = undefined;
+            pub const @"fill-opacity": ?f32 = undefined;
+            pub const stroke: ?Color = undefined;
+            pub const @"stroke-width": ?f32 = undefined;
+            pub const @"stroke-opacity": ?f32 = undefined;
         };
         for (att, val) |a, v| {
             try utils.auto_parse_def(@This(), self, Def, a, v);
@@ -668,15 +676,15 @@ const Ellipse = struct {
         val: []const []const u8,
     ) !void {
         const Def = struct {
-            const rx: ?f32 = undefined;
-            const ry: ?f32 = undefined;
-            const cx: f32 = undefined;
-            const cy: f32 = undefined;
-            const fill: ?Color = undefined;
-            const @"fill-opacity": ?f32 = undefined;
-            const stroke: ?Color = undefined;
-            const @"stroke-width": ?f32 = undefined;
-            const @"stroke-opacity": ?f32 = undefined;
+            pub const rx: ?f32 = undefined;
+            pub const ry: ?f32 = undefined;
+            pub const cx: f32 = undefined;
+            pub const cy: f32 = undefined;
+            pub const fill: ?Color = undefined;
+            pub const @"fill-opacity": ?f32 = undefined;
+            pub const stroke: ?Color = undefined;
+            pub const @"stroke-width": ?f32 = undefined;
+            pub const @"stroke-opacity": ?f32 = undefined;
         };
         for (att, val) |a, v| {
             try utils.auto_parse_def(@This(), self, Def, a, v);
@@ -733,7 +741,7 @@ const Line = struct {
 };
 // Defines any shape that consists of only straight lines. The shape is open
 const PolyLine = struct {
-    points: []const Point, //The list of points of the polygon. Each point must contain an x coordinate and a y coordinate. Required.
+    points: []const Point = &.{}, //The list of points of the polygon. Each point must contain an x coordinate and a y coordinate. Required.
     fill: ?Color = null,
     @"fill-opacity": ?f32 = null, // between 0 and 1
     stroke: ?Color = null,
@@ -774,7 +782,7 @@ const PolyLine = struct {
 };
 // Creates a graphic that contains at least three sides. Polygons are made of straight lines, and the shape is "closed"
 const Polygon = struct {
-    points: []const Point, //The list of points of the polygon. Each point must contain an x-  and a y-coordinate. Required.
+    points: []const Point = &.{}, //The list of points of the polygon. Each point must contain an x coordinate and a y coordinate. Required.
     fill: ?Color = null,
     @"fill-opacity": ?f32 = null, // between 0 and 1
     stroke: ?Color = null,
@@ -812,8 +820,9 @@ const Polygon = struct {
         try maker.close();
     }
 };
+const ParsePath = struct {};
 const SvgPath = struct {
-    d: ParsePath, //The list of points of the polygon. Each point must contain an x-  and a y-coordinate. Required.
+    d: ParsePath = ParsePath{}, //The list of points of the polygon. Each point must contain an x-  and a y-coordinate. Required.
     fill: ?Color = null,
     @"fill-opacity": ?f32 = null, // between 0 and 1
     stroke: ?Color = null,
@@ -941,7 +950,6 @@ const G = struct {
         }
     }
 };
-const ParsePath = struct {};
 pub fn SvgConverter(W: type) type {
     return struct {
         const Converter = @This();
@@ -980,12 +988,12 @@ pub fn SvgConverter(W: type) type {
         ) !void {
             const stroke = properties.stroke;
             const stoke_width = properties.@"stroke-width";
-            const fill = properties.stroke;
+            // const fill = properties.stroke;
 
-            if (fill) |col| {
-                const col_idx = self.colormap.get(.fromColor(col)).?;
-                try self.builder.writeFillPath(.{ .flat = col_idx }, pathlist);
-            }
+            // if (fill) |col| {
+            //     const col_idx = self.colormap.get(.fromColor(col)).?;
+            //     try self.builder.writeFillPath(.{ .flat = col_idx }, pathlist);
+            // }
             if (stroke) |col| {
                 const col_idx = self.colormap.get(.fromColor(col)).?;
                 try self.builder.writeDrawPath(.{ .flat = col_idx }, stoke_width orelse default.stroke_width, pathlist);
@@ -1034,8 +1042,9 @@ pub fn SvgConverter(W: type) type {
                             inline for (ColorProperties) |p| {
                                 const c = try utils.parseColor(p, att_name, att_val);
                                 if (c) |col| {
-                                    if (self.colormap.getKey(.fromColor(col))) |k| {
-                                        try self.colormap.put(k, self.colortable_len);
+                                    const key = ColorHash.fromColor(col);
+                                    if (self.colormap.getKey(key) == null) {
+                                        try self.colormap.put(key, math.cast(u32, self.colortable_len) orelse return error.IndexOOB);
                                         self.colortable_len += 1;
                                     }
                                 }
@@ -1048,10 +1057,10 @@ pub fn SvgConverter(W: type) type {
             }
         }
         pub fn svg_width(self: *@This()) u32 {
-            return @intFromFloat(self.svg.width);
+            return @intFromFloat(self.svg.width.?);
         }
         pub fn svg_height(self: *@This()) u32 {
-            return @intFromFloat(self.svg.height);
+            return @intFromFloat(self.svg.height.?);
         }
 
         pub fn run(self: *@This(), svg_bytes: []const u8) !void {
@@ -1070,8 +1079,11 @@ pub fn SvgConverter(W: type) type {
 
             const colors_hash = self.colormap.keys();
             const colors = try self.arena1.allocator().alloc(Color, colors_hash.len);
-            for (colors, colors_hash) |*v, v2| {
-                v.* = v2.toColor();
+            std.log.warn("writing colortable: RGBA", .{});
+            for (colors, colors_hash, 0..) |*v, v2, i| {
+                const c = v2.toColor();
+                v.* = c;
+                std.log.warn("- {} | [{d:.1} {d:.1} {d:.1} {d:.1}]", .{ i, c.r, c.g, c.b, c.a });
             }
             try self.builder.writeColorTable(colors);
 
@@ -1099,7 +1111,7 @@ pub fn SvgConverter(W: type) type {
                         if (!found_svg_tag) {
                             if (std.mem.eql(u8, "svg", element_tag)) {
                                 found_svg_tag = true;
-                                const makenode = make_node.init(Point{ .x = 0, .y = 0 });
+                                const makenode = make_node.init(&self.svg, Point{ .x = 0, .y = 0 });
                                 self.maker = NodeMaker.init(makenode, &self.cmds, &self.seg);
                                 try stack.push(current_properties);
                                 const top_mut = stack.top_mut().?;
@@ -1123,7 +1135,7 @@ pub fn SvgConverter(W: type) type {
 
                             for (att_names, att_vals, 0..) |*n, *v, i| {
                                 n.* = try garbage_alloc.dupe(u8, reader.attributeNameNs(i).local);
-                                v.* = try garbage_alloc.dupe(u8, reader.attributeValue(i));
+                                v.* = try garbage_alloc.dupe(u8, try reader.attributeValue(i));
                             }
                             // Container
                             if (std.mem.eql(u8, "g", element_tag)) {
@@ -1134,35 +1146,41 @@ pub fn SvgConverter(W: type) type {
                             // Drawing Primitives
                             if (std.mem.eql(u8, "rect", element_tag)) {
                                 var element = Rect{};
-                                try element.parse(self.maker, att_names, att_vals);
+                                try element.parse(&self.maker, att_names, att_vals);
                                 top_mut.override_from(element);
-                                self.write_path(self.maker.current_segments(), top_mut);
+                                try self.write_path(self.maker.current_segments(), top_mut);
                             } else if (std.mem.eql(u8, "circle", element_tag)) {
                                 var element = Circle{};
-                                try element.parse(self.maker, att_names, att_vals);
+                                try element.parse(&self.maker, att_names, att_vals);
                                 top_mut.override_from(element);
+                                try self.write_path(self.maker.current_segments(), top_mut);
                             } else if (std.mem.eql(u8, "ellipse", element_tag)) {
                                 var element = Ellipse{};
-                                try element.parse(self.maker, att_names, att_vals);
+                                try element.parse(&self.maker, att_names, att_vals);
                                 top_mut.override_from(element);
+                                try self.write_path(self.maker.current_segments(), top_mut);
                             } else if (std.mem.eql(u8, "line", element_tag)) {
                                 var element = Line{};
-                                try element.parse(self.maker, att_names, att_vals);
+                                try element.parse(&self.maker, att_names, att_vals);
                                 top_mut.override_from(element);
+                                try self.write_path(self.maker.current_segments(), top_mut);
                             } else if (std.mem.eql(u8, "polyline", element_tag)) {
                                 var element = PolyLine{};
-                                try element.parse(self.maker, garbage_alloc, att_names, att_vals);
+                                try element.parse(&self.maker, garbage_alloc, att_names, att_vals);
                                 top_mut.override_from(element);
+                                try self.write_path(self.maker.current_segments(), top_mut);
                             } else if (std.mem.eql(u8, "polygon", element_tag)) {
                                 var element = Polygon{};
-                                try element.parse(self.maker, garbage_alloc, att_names, att_vals);
+                                try element.parse(&self.maker, garbage_alloc, att_names, att_vals);
                                 top_mut.override_from(element);
-                            } else if (std.mem.eql(u8, "path", garbage_alloc, element_tag)) {
+                                try self.write_path(self.maker.current_segments(), top_mut);
+                            } else if (std.mem.eql(u8, "path", element_tag)) {
                                 var element = SvgPath{};
-                                try element.parse(self.maker, garbage_alloc, att_names, att_vals);
+                                try element.parse(&self.maker, garbage_alloc, att_names, att_vals);
                                 top_mut.override_from(element);
+                                try self.write_path(self.maker.current_segments(), top_mut);
                             } else {
-                                std.log.warn("unrecognized element", .{element_tag});
+                                std.log.warn("unrecognized element: {s}", .{element_tag});
                             }
                             // dispose of the garbage
                             _ = self.arena2.reset(.retain_capacity);
@@ -1247,7 +1265,7 @@ test "make tvg og" {
     std.log.warn("ok", .{});
 }
 
-test "convert to tvg" {
+test "icon map" {
     // if (true) return;
     const gpa = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(gpa);
@@ -1255,20 +1273,58 @@ test "convert to tvg" {
     const alloc = arena.allocator();
     // var output = std.io.getStdOut();
 
-    var file = try std.fs.cwd().createFile("test/mykk.tvg", .{});
-    try tvg_from_svg(alloc, file.writer(), icons.svg.lucide.play);
-    file.close();
+    const icons_n = 5;
+    const icons_nxn = icons_n * icons_n;
+    const icon_width = 24 * 8;
+    const wh = icons_n * icon_width;
 
-    var fileo = try std.fs.cwd().openFile("test/mykk.tvg", .{});
-    const w = 300;
-    const h = 300;
-    var image_wrapper = ImageWrapper{
-        .img = try Image.init(alloc, w, h),
-        .width = w,
-        .height = h,
+    const arr = struct {
+        pub const feathericons = icons.svg.feather;
     };
-    const icon = try fileo.readToEndAlloc(alloc, 1024 * 1024);
-    try tvg.render(alloc, &image_wrapper, icon);
-    try image_wrapper.img.write_ppm_to_file("test/converted.ppm");
-    std.log.warn("ok", .{});
+    inline for (@typeInfo(arr).@"struct".decls) |tname| {
+        const T = @field(arr, tname.name);
+        const idecls = @typeInfo(T).@"struct".decls;
+        comptime var xtime = idecls.len / icons_nxn;
+        if (comptime idecls.len % icons_n != 0) xtime += 1;
+        inline for (0..xtime) |i| {
+            const offset = i * icons_n;
+            var img = try Image.init(alloc, wh, wh);
+            inline for (idecls[offset..@min(idecls.len, offset + icons_nxn)], 0..) |decl, j| {
+                const icon_bytes = @field(T, decl.name);
+                try render_icon_patch(&img, alloc, icon_bytes, icons_n, j);
+                std.log.warn("ok", .{});
+            }
+            try img.write_ppm_to_file(try std.fmt.allocPrint(alloc, "test/{}-p{}.ppm", .{ T, i }));
+            _ = arena.reset(.retain_capacity);
+        }
+    }
+}
+
+fn render_icon_patch(
+    img: *Image,
+    alloc: Allocator,
+    svg_bytes: []const u8,
+    icons_n: usize,
+    index: usize,
+) !void {
+    assert(index < icons_n * icons_n);
+    const dx = img.get_width() / icons_n;
+    const yi = index / icons_n;
+    const xi = index - yi * icons_n;
+    var simg = img.sub_img(xi * dx, dx, yi * dx, dx);
+    try render_icon(&simg, alloc, svg_bytes);
+}
+fn render_icon(
+    img: *Image,
+    alloc: Allocator,
+    svg_bytes: []const u8,
+) !void {
+    var w = std.ArrayList(u8).init(alloc);
+    try tvg_from_svg(alloc, w.writer(), svg_bytes);
+    var image_wrapper = ImageWrapper{
+        .img = img,
+        .width = @intCast(img.get_width()),
+        .height = @intCast(img.get_height()),
+    };
+    try tvg.render(alloc, &image_wrapper, w.items);
 }
