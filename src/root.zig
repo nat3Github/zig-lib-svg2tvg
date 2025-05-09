@@ -131,14 +131,50 @@ test "convert to tvg" {
     std.log.warn("ok", .{});
 }
 
-const NestedProperties = struct {
-    fill_color: ?Color = null,
-    stroke: ?Color = null,
-    stroke_width: ?f32 = null,
-    stroke_linecap: ?f32 = null,
-    stroke_linejoin: ?f32 = null,
-    type: SvgElement,
+const InheritableProperties = struct {
+    fill: ?Color = null, // Fill color
+    @"fill-opacity": ?Color = null, // Opacity of the fill
+    stroke: ?Color = null, // Stroke (outline) color
+    @"stroke-opacity": ?f32 = null, // Stroke opacity
+    @"stroke-width": ?f32 = null, // Stroke thickness
+    // @"stroke-dasharray": ? = null, // Dash pattern of the stroke
+    // @"stroke-dashoffset": ? = null, // Offset into the dash pattern
+    // @"stroke-linecap": ?C = null, // Shape of stroke ends (butt, round, square)
+    // @"stroke-linejoin": ? = null, // Corner rendering (miter, round, bevel)
+    // @"stroke-miterlimit": ? = null, // Miter limit for sharp corners
+    opacity: ?f32 = null, // Overall opacity (applies to the whole element)
+    // visibility: ?bool = null, // Whether element is visible (visible, hidden)
+    // display: ?Color = null, // Whether element is rendered (inline, none)
+    color: ?Color = null, // Used as base color (currentColor, filters, etc.)
+    // @"font-*": ?Color = null, // If used in text elements
+    // direction: ?Color = null, // Text and layout direction (e.g. ltr, rtl)
+    // @"text-anchor": ?Color = null, // Text alignment
+    // @"writing-mode": ?Color = null, // Vertical/horizontal text flow
+    // @"clip-path": ?Color = null, // Clipping region
+    // mask: ?Color = null, // Mask to apply to element
+    // filter: ?Color = null, // Filter effects (blur, drop shadow, etc.)
+    pub fn override(self: *const InheritableProperties, over: InheritableProperties) InheritableProperties {
+        var ret = self.*;
+        inline for (@typeInfo(InheritableProperties).@"struct".fields) |f| {
+            if (@field(over, f.name)) |fval| {
+                @field(ret, f.name) = fval;
+            }
+        }
+        return ret;
+    }
+    pub fn override_from(self: *@This(), t: anytype) void {
+        const T = @TypeOf(t);
+        inline for (@typeInfo(InheritableProperties).@"struct".fields) |f| {
+            if (comptime utils.has_field(T, f.name)) {
+                comptime assert(f.type == @TypeOf(@field(T, f.name)));
+                if (@field(t, f.name)) |fval| {
+                    @field(self, f.name) = fval;
+                }
+            }
+        }
+    }
 };
+
 const SvgTag = enum(u8) {
     svg,
     rect,
@@ -155,23 +191,6 @@ const SvgTag = enum(u8) {
     // a, //link
     // image,
     // marker,
-};
-const SvgElement = union(SvgTag) {
-    svg: Svg,
-    rect: Rect,
-    circle: Circle,
-    ellipse: Ellipse,
-    line: Line,
-    polyline: PolyLine,
-    polygon: Polygon,
-    path: Path,
-    // text: Text,
-    // textPath: TextPath,
-    // tref: u32,
-    // tspan: u32,
-    // a: u32 //link
-    // image: u32,
-    // marker: u32,
 };
 pub const utils = struct {
     pub fn has_field(T: type, comptime name: []const u8) T {
@@ -223,11 +242,20 @@ pub const utils = struct {
             }
         }
     }
+    pub fn toPoint(cord: svg_parsing.CoordinatePair) Point {
+        return Point{
+            .x = fromNumber(cord.coordinates[0].number),
+            .y = fromNumber(cord.coordinates[1].number),
+        };
+    }
+    pub fn fromNumber(number: svg_parsing.Number) f32 {
+        return @floatCast(number.value);
+    }
 };
 pub const NodeMaker = struct {
     m: make_node,
-    cmds: std.ArrayList(Node),
-    seg: std.ArrayList(Segment),
+    cmds: *std.ArrayList(Node),
+    seg: *std.ArrayList(Segment),
     cmds_len: usize,
     seg_len: usize,
     flushed: bool = true,
@@ -235,8 +263,8 @@ pub const NodeMaker = struct {
 
     pub fn init(
         m: make_node,
-        cmds: std.ArrayList(Node),
-        seg: std.ArrayList(Segment),
+        cmds: *std.ArrayList(Node),
+        seg: *std.ArrayList(Segment),
     ) NodeMaker {
         return NodeMaker{
             .cmds = cmds,
@@ -312,12 +340,17 @@ pub const make_node = struct {
     __pos: Point,
     vw: Svg,
 
-    pub fn move(p: Point) make_node {
+    pub fn init(p: Point) make_node {
         return make_node{
             .__first = p,
             .__pos = p,
             .__c = null,
         };
+    }
+    pub fn move(self: *make_node, p: Point) void {
+        self.__first = p;
+        self.__pos = p;
+        self.__c = null;
     }
     pub fn close(self: *make_node, lw: f32) Node {
         self.__pos = self.__first;
@@ -529,7 +562,7 @@ const Rect = struct {
         maker: *NodeMaker,
         att: []const []const u8,
         val: []const []const u8,
-    ) ![2]Segment {
+    ) !void {
         const Def = struct {
             const width: ?f32 = undefined;
             const height: ?f32 = undefined;
@@ -544,7 +577,7 @@ const Rect = struct {
             const @"stroke-opacity": ?f32 = undefined;
         };
         for (att, val) |a, v| {
-            try utils.auto_parse(@This(), self, Def, a, v);
+            try utils.auto_parse_def(@This(), self, Def, a, v);
         }
         const lw = default.or_stroke_width(self.@"stroke-width");
         maker.lw = lw;
@@ -592,7 +625,7 @@ const Circle = struct {
         maker: *NodeMaker,
         att: []const []const u8,
         val: []const []const u8,
-    ) ![2]Segment {
+    ) !void {
         const Def = struct {
             const r: ?f32 = undefined;
             const cx: f32 = undefined;
@@ -604,7 +637,7 @@ const Circle = struct {
             const @"stroke-opacity": ?f32 = undefined;
         };
         for (att, val) |a, v| {
-            try utils.auto_parse(@This(), self, Def, a, v);
+            try utils.auto_parse_def(@This(), self, Def, a, v);
         }
         const r = self.r orelse return error.NoRadius;
         const lw = default.or_stroke_width(self.@"stroke-width");
@@ -640,7 +673,7 @@ const Ellipse = struct {
         maker: *NodeMaker,
         att: []const []const u8,
         val: []const []const u8,
-    ) ![2]Segment {
+    ) !void {
         const Def = struct {
             const rx: ?f32 = undefined;
             const ry: ?f32 = undefined;
@@ -653,7 +686,7 @@ const Ellipse = struct {
             const @"stroke-opacity": ?f32 = undefined;
         };
         for (att, val) |a, v| {
-            try utils.auto_parse(@This(), self, Def, a, v);
+            try utils.auto_parse_def(@This(), self, Def, a, v);
         }
         const rrx = self.rx orelse return error.NoRadius;
         const rry = self.ry orelse return error.NoRadius;
@@ -680,7 +713,7 @@ const Line = struct {
         maker: *NodeMaker,
         att: []const []const u8,
         val: []const []const u8,
-    ) ![2]Segment {
+    ) !void {
         const Def = struct {
             pub const x1: ?f32 = undefined;
             pub const y1: ?f32 = undefined;
@@ -691,7 +724,7 @@ const Line = struct {
             pub const @"stroke-opacity": ?f32 = undefined;
         };
         for (att, val) |a, v| {
-            try utils.auto_parse(@This(), self, Def, a, v);
+            try utils.auto_parse_def(@This(), self, Def, a, v);
         }
         const ax = self.x1 orelse return error.MissingLineParameter;
         const ay = self.y1 orelse return error.MissingLineParameter;
@@ -720,7 +753,7 @@ const PolyLine = struct {
         alloc: Allocator,
         att: []const []const u8,
         val: []const []const u8,
-    ) ![2]Segment {
+    ) !void {
         const Def = struct {
             pub const fill: ?Color = undefined;
             pub const @"fill-opacity": ?f32 = undefined;
@@ -729,7 +762,7 @@ const PolyLine = struct {
             pub const @"stroke-opacity": ?f32 = undefined;
         };
         for (att, val) |a, v| {
-            try utils.auto_parse(@This(), self, Def, a, v);
+            try utils.auto_parse_def(@This(), self, Def, a, v);
             if (try utils.parsePointList(alloc, "points", a, v)) |res| {
                 self.points = res.items;
             }
@@ -760,7 +793,7 @@ const Polygon = struct {
         alloc: Allocator,
         att: []const []const u8,
         val: []const []const u8,
-    ) ![2]Segment {
+    ) !void {
         const Def = struct {
             pub const fill: ?Color = undefined;
             pub const @"fill-opacity": ?f32 = undefined;
@@ -769,7 +802,7 @@ const Polygon = struct {
             pub const @"stroke-opacity": ?f32 = undefined;
         };
         for (att, val) |a, v| {
-            try utils.auto_parse(@This(), self, Def, a, v);
+            try utils.auto_parse_def(@This(), self, Def, a, v);
             if (try utils.parsePointList(alloc, "points", a, v)) |res| {
                 self.points = res.items;
             }
@@ -793,209 +826,125 @@ const SvgPath = struct {
     stroke: ?Color = null,
     @"stroke-width": ?f32 = null,
     @"stroke-opacity": ?f32 = null, // between 0 and 1
-
-    pub fn parse(self: *@This(), att: []const u8, val: []const u8, arena_alloc: Allocator, ssvg: *Svg, builder: anytype) !void {
-        var current_segement: ?Segment = null;
-        try utils.auto_parse(@This(), self, att, val);
-        if (std.mem.eql(u8, att, "d")) {
-            var previous_control_point: ?Point = null;
-
-            var path_list = std.ArrayList(Segment).init(arena_alloc);
-
-            var command_list = std.ArrayList(Node).init(arena_alloc);
-
-            var path_d = try svg_parsing.Path.parse(arena_alloc, val);
-            defer path_d.path.deinit();
-
-            const line_width = 2;
-            for (path_d.path.nodes) |p| {
-                switch (p) {
-                    .move_to => |v| {
-                        for (v.args) |coord| {
-                            if (current_segement) |s| {
-                                if (command_list.items.len > 0) {
-                                    const seg = Segment{
-                                        .start = s.start,
-                                        .commands = command_list.items,
-                                    };
-                                    try path_list.append(seg);
-                                    command_list = std.ArrayList(Node).init(arena_alloc);
-                                }
+    pub fn parse(
+        self: *@This(),
+        maker: *NodeMaker,
+        alloc: Allocator,
+        att: []const []const u8,
+        val: []const []const u8,
+    ) !void {
+        const Def = struct {
+            pub const fill: ?Color = undefined;
+            pub const @"fill-opacity": ?f32 = undefined;
+            pub const stroke: ?Color = undefined;
+            pub const @"stroke-width": ?f32 = undefined;
+            pub const @"stroke-opacity": ?f32 = undefined;
+        };
+        for (att, val) |a, vx| {
+            try utils.auto_parse_def(@This(), self, Def, a, vx);
+        }
+        for (att, val) |a, vx| {
+            if (std.mem.eql(u8, a, "d")) {
+                const lw = default.or_stroke_width(self.@"stroke-width");
+                maker.lw = lw;
+                var path_d = try svg_parsing.Path.parse(alloc, vx);
+                defer path_d.path.deinit();
+                for (path_d.path.nodes) |pnode| {
+                    switch (pnode) {
+                        .move_to => |v| {
+                            for (v.args) |coord| {
+                                const p = utils.toPoint(coord);
+                                try maker.move(p);
                             }
-                            current_segement = Segment{
-                                .start = ssvg.point_from(coord),
-                                .commands = &.{},
-                            };
-                        }
-                    },
+                        },
 
-                    .close_path => |_| {
-                        const xnode = Node{ .close = NodeData(void){
-                            .data = {},
-                            .line_width = line_width,
-                        } };
-                        try command_list.append(xnode);
-                        if (current_segement) |s| {
-                            const seg = Segment{
-                                .start = s.start,
-                                .commands = command_list.items,
-                            };
-                            try path_list.append(seg);
-                            command_list = std.ArrayList(Node).init(arena_alloc);
-                        }
-                    },
-                    .line_to => |v| {
-                        for (v.args) |coord| {
-                            const xnode = Node{ .line = NodeData(Point){
-                                .data = ssvg.point_from(coord),
-                                .line_width = line_width,
-                            } };
-                            try command_list.append(xnode);
-                        }
-                    },
-                    .vertical_line_to => |v| {
-                        for (v.args) |coord| {
-                            const xnode = Node{ .vert = NodeData(f32){
-                                .data = @floatCast(coord.value),
-                                .line_width = line_width,
-                            } };
-                            try command_list.append(xnode);
-                        }
-                    },
-                    .horizontal_line_to => |v| {
-                        for (v.args) |coord| {
-                            const xnode = Node{ .horiz = NodeData(f32){
-                                .data = @floatCast(coord.value),
-                                .line_width = line_width,
-                            } };
-                            try command_list.append(xnode);
-                        }
-                    },
-                    .quadratic_bezier_curve_to => |v| {
-                        for (v.args) |arg| {
-                            const xnode = Node{ .quadratic_bezier = NodeData(Node.QuadraticBezier){
-                                .data = Node.QuadraticBezier{
-                                    .c = ssvg.point_from(arg.p1),
-                                    .p1 = ssvg.point_from(arg.end),
-                                },
-                                .line_width = line_width,
-                            } };
-                            try command_list.append(xnode);
-                            previous_control_point = ssvg.point_from(arg.p1);
-                        }
-                    },
-                    .curve_to => |v| {
-                        for (v.args) |arg| {
-                            const xnode = Node{ .bezier = NodeData(Node.Bezier){
-                                .data = Node.Bezier{
-                                    .c0 = ssvg.point_from(arg.p1),
-                                    .c1 = ssvg.point_from(arg.p2),
-                                    .p1 = ssvg.point_from(arg.end),
-                                },
-                                .line_width = line_width,
-                            } };
-                            try command_list.append(xnode);
-                            previous_control_point = ssvg.point_from(arg.p2);
-                        }
-                    },
-                    .smooth_quadratic_bezier_curve_to => |v| {
-                        for (v.args) |arg| {
-                            const xnode = Node{ .quadratic_bezier = NodeData(Node.QuadraticBezier){
-                                .data = Node.QuadraticBezier{
-                                    .c = previous_control_point orelse return error.NoPrevControlPoint,
-                                    .p1 = ssvg.point_from(arg),
-                                },
-                                .line_width = line_width,
-                            } };
-                            try command_list.append(xnode);
-                        }
-                    },
-                    .smooth_curve_to => |v| {
-                        for (v.args) |arg| {
-                            const xnode = Node{ .bezier = NodeData(Node.Bezier){
-                                .data = Node.Bezier{
-                                    .c0 = reflect_point(previous_control_point orelse return error.NoPrevControlPoint, ssvg.point_from(arg.p2)),
-                                    .c1 = ssvg.point_from(arg.p2),
-                                    .p1 = ssvg.point_from(arg.end),
-                                },
-                                .line_width = line_width,
-                            } };
-                            try command_list.append(xnode);
-                            previous_control_point = ssvg.point_from(arg.p2);
-                        }
-                    },
-                    .elliptical_arc => |v| {
-                        for (v.args) |arg| {
-                            const xnode = Node{ .arc_ellipse = NodeData(Node.ArcEllipse){
-                                .data = Node.ArcEllipse{
-                                    .radius_x = @floatCast(arg.rx.value),
-                                    .radius_y = @floatCast(arg.ry.value),
-                                    .rotation = @floatCast(arg.x_axis_rotation.value),
-                                    .large_arc = arg.large_arc_flag.value,
-                                    .sweep = arg.sweep_flag.value,
-                                    .target = ssvg.point_from(arg.point),
-                                },
-                                .line_width = line_width,
-                            } };
-                            try command_list.append(xnode);
-                        }
-                    },
-                }
-            }
-            if (current_segement) |s| {
-                const seg = Segment{
-                    .start = s.start,
-                    .commands = command_list.items,
-                };
-                try path_list.append(seg);
-                command_list = std.ArrayList(Node).init(arena_alloc);
-            }
-            std.log.warn("pathlist", .{});
-            for (path_list.items) |pit| {
-                std.log.warn("start: x: {d:.2} y: {d:.2}", .{ pit.start.x, pit.start.y });
-                for (pit.commands) |c| {
-                    switch (c) {
-                        .line => |v| {
-                            std.log.warn("line", .{});
-                            const vp = v.data;
-                            std.log.warn("start: x: {d:.2} y: {d:.2}", .{ vp.x, vp.y });
+                        .close_path => |_| {
+                            try maker.close();
                         },
-                        .horiz => |v| {
-                            std.log.warn("horiz {d:.2}", .{v.data});
+                        .line_to => |v| {
+                            for (v.args) |coord| {
+                                const p = utils.toPoint(coord);
+                                try maker.line(p);
+                            }
                         },
-                        .vert => |v| {
-                            std.log.warn("vert {d:.2}", .{v.data});
+                        .vertical_line_to => |v| {
+                            for (v.args) |coord| {
+                                const f = utils.fromNumber(coord);
+                                try maker.vert(f);
+                            }
                         },
-                        .bezier => |v| {
-                            std.log.warn("bezier", .{});
-                            const vp = v.data.p1;
-                            std.log.warn("start: x: {d:.2} y: {d:.2}", .{ vp.x, vp.y });
+                        .horizontal_line_to => |v| {
+                            for (v.args) |coord| {
+                                const f = utils.fromNumber(coord);
+                                try maker.horiz(f);
+                            }
                         },
-                        .arc_circle => |v| {
-                            std.log.warn("arc_circle", .{});
-                            const vp = v.data.target;
-                            std.log.warn("start: x: {d:.2} y: {d:.2}", .{ vp.x, vp.y });
+                        .quadratic_bezier_curve_to => |v| {
+                            for (v.args) |arg| {
+                                const c = utils.toPoint(arg.p1);
+                                const p = utils.toPoint(arg.end);
+                                try maker.quadratic_bezier_curve_to(c, p);
+                            }
                         },
-                        .arc_ellipse => |v| {
-                            std.log.warn("arc_ellipse", .{});
-                            const vp = v.data.target;
-                            std.log.warn("start: x: {d:.2} y: {d:.2}", .{ vp.x, vp.y });
+                        .curve_to => |v| {
+                            for (v.args) |arg| {
+                                const c1 = utils.toPoint(arg.p1);
+                                const c2 = utils.toPoint(arg.p2);
+                                const p = utils.toPoint(arg.end);
+                                try maker.curve_to(c1, c2, p);
+                            }
                         },
-                        .close => |_| {
-                            std.log.warn("close", .{});
+                        .smooth_quadratic_bezier_curve_to => |v| {
+                            for (v.args) |arg| {
+                                const p = utils.toPoint(arg);
+                                try maker.smooth_quadratic_bezier_curve_to(p);
+                            }
                         },
-                        .quadratic_bezier => |v| {
-                            std.log.warn("quadratic_bezier", .{});
-                            const vp = v.data.p1;
-                            std.log.warn("start: x: {d:.2} y: {d:.2}", .{ vp.x, vp.y });
+                        .smooth_curve_to => |v| {
+                            for (v.args) |arg| {
+                                const c2 = utils.toPoint(arg.p2);
+                                const p = utils.toPoint(arg.end);
+                                try maker.smooth_curve_to(c2, p);
+                            }
+                        },
+                        .elliptical_arc => |v| {
+                            for (v.args) |arg| {
+                                const rx: f32 = @floatCast(arg.rx.value);
+                                const ry: f32 = @floatCast(arg.ry.value);
+                                const rotation: f32 = @floatCast(arg.x_axis_rotation.value);
+                                const large_arc = arg.large_arc_flag.value;
+                                const sweep = arg.sweep_flag.value;
+                                const target = utils.toPoint(arg.point);
+                                try maker.elliptical_arc(rx, ry, rotation, large_arc, sweep, target);
+                            }
                         },
                     }
                 }
+                try maker.flush();
             }
-
-            if (path_list.items.len > 0) {
-                try builder.writeDrawPath(.{ .flat = 0 }, 2, path_list.items);
-            }
+        }
+    }
+};
+const G = struct {
+    fill: ?Color = null,
+    @"fill-opacity": ?f32 = null, // between 0 and 1
+    stroke: ?Color = null,
+    @"stroke-width": ?f32 = null,
+    @"stroke-opacity": ?f32 = null, // between 0 and 1
+    pub fn parse(
+        self: *@This(),
+        att: []const []const u8,
+        val: []const []const u8,
+    ) !void {
+        const Def = struct {
+            pub const fill: ?Color = undefined;
+            pub const @"fill-opacity": ?f32 = undefined;
+            pub const stroke: ?Color = undefined;
+            pub const @"stroke-width": ?f32 = undefined;
+            pub const @"stroke-opacity": ?f32 = undefined;
+        };
+        for (att, val) |a, v| {
+            try utils.auto_parse_def(@This(), self, Def, a, v);
         }
     }
 };
@@ -1010,6 +959,27 @@ pub fn SvgConverter(W: type) type {
         colormap: ColMap,
         svg: Svg = Svg{},
         builder: Builder,
+        maker: NodeMaker = undefined,
+        cmds: std.ArrayList(Node),
+        seg: std.ArrayList(Segment),
+
+        pub fn init(alloc: Allocator, writer: W) @This() {
+            return @This(){
+                .builder = Builder{ .writer = writer },
+                .arena1 = std.heap.ArenaAllocator.init(alloc),
+                .arena2 = std.heap.ArenaAllocator.init(alloc),
+                .colormap = ColMap.init(alloc),
+                .cmds = try std.ArrayList(Node).init(alloc),
+                .seg = try std.ArrayList(Segment).init(alloc),
+            };
+        }
+        pub fn deinit(self: *@This()) @This() {
+            self.arena1.deinit();
+            self.arena2.deinit();
+            self.colormap.deinit();
+            self.cmds.deinit();
+            self.seg.deinit();
+        }
         pub fn write_path(
             self: *@This(),
             pathlist: []const Segment,
@@ -1042,19 +1012,6 @@ pub fn SvgConverter(W: type) type {
                 const stroke_width = @field(t, "stroke-width");
                 try self.write_path(pathlist, fill, stroke, stroke_width);
             } else @compileError("why U call this?");
-        }
-        pub fn init(alloc: Allocator, writer: W) @This() {
-            return @This(){
-                .builder = Builder{ .writer = writer },
-                .arena1 = std.heap.ArenaAllocator.init(alloc),
-                .arena2 = std.heap.ArenaAllocator.init(alloc),
-                .colormap = ColMap.init(alloc),
-            };
-        }
-        pub fn deinit(self: *@This()) @This() {
-            self.arena1.deinit();
-            self.arena2.deinit();
-            self.colormap.deinit();
         }
         pub fn parse_colors_and_svg(self: *@This(), svg_bytes: []const u8) !void {
             const alloc = self.arena1.allocator();
@@ -1139,11 +1096,12 @@ pub fn SvgConverter(W: type) type {
             }
             try self.builder.writeColorTable(colors);
 
-            var stack = try Stack(NestedProperties).init(gpa, 128);
+            var stack = try Stack(InheritableProperties).init(gpa, 128);
             defer stack.deinit(gpa);
 
             var layer_arena = std.heap.ArenaAllocator.init(gpa);
             defer layer_arena.deinit();
+            var found_svg_tag = false;
 
             while (true) {
                 const node = reader.read() catch |err| switch (err) {
@@ -1156,53 +1114,81 @@ pub fn SvgConverter(W: type) type {
                 };
                 switch (node) {
                     .element_start => {
-                        const current_properties = stack.top() orelse NestedProperties{};
-                        try stack.push(current_properties);
-                        const nested = stack.top_mut().?;
-
                         const element_name = reader.elementNameNs();
                         const element_tag = element_name.local;
+                        const current_properties = stack.top() orelse InheritableProperties{};
+                        if (!found_svg_tag) {
+                            if (std.mem.eql(u8, "svg", element_tag)) {
+                                found_svg_tag = true;
+                                const makenode = make_node.init(Point{ .x = 0, .y = 0 });
+                                self.maker = NodeMaker.init(makenode, &self.cmds, &self.seg);
+                                try stack.push(current_properties);
+                                const top_mut = stack.top_mut().?;
+                                top_mut.override_from(self.svg);
+                                continue;
+                            }
+                        } else {
+                            try stack.push(current_properties);
+                            const top_mut = stack.top_mut().?;
 
-                        std.log.warn(
-                            \\element_start:  {}
-                        , .{
-                            std.zig.fmtEscapes(element_name.local),
-                        });
-                        const att_count = reader.reader.attributeCount();
-                        const att_names = try self.arena2.allocator().alloc([]const u8, att_count);
-                        const att_vals = try self.arena2.allocator().alloc([]const u8, att_count);
+                            // std.log.warn(
+                            //     \\element_start:  {}
+                            // , .{
+                            //     std.zig.fmtEscapes(element_name.local),
+                            // });
 
-                        for (att_names, att_vals, 0..) |*n, *v, i| {
-                            n.* = try self.arena2.allocator().dupe(u8, reader.attributeNameNs(i).local);
-                            v.* = try self.arena2.allocator().dupe(u8, reader.attributeValue(i));
-                        }
+                            const att_count = reader.reader.attributeCount();
+                            const att_names = try self.arena2.allocator().alloc([]const u8, att_count);
+                            const att_vals = try self.arena2.allocator().alloc([]const u8, att_count);
 
-                        if (std.mem.eql(u8, "path", element_tag)) {
-                            nested.type = .{ .path = svg_parsing.Path{} };
-                            try nested.type.path.parse(att_names, att_vals);
+                            for (att_names, att_vals, 0..) |*n, *v, i| {
+                                n.* = try self.arena2.allocator().dupe(u8, reader.attributeNameNs(i).local);
+                                v.* = try self.arena2.allocator().dupe(u8, reader.attributeValue(i));
+                            }
+                            // Container
+                            if (std.mem.eql(u8, "g", element_tag)) {
+                                var element = G{};
+                                try element.parse(att_names, att_vals);
+                                top_mut.override_from(element);
+                            } else
+                            // Drawing Primitives
+                            if (std.mem.eql(u8, "rect", element_tag)) {
+                                var element = Rect{};
+                                try element.parse(att_names, att_vals);
+                                top_mut.override_from(element);
+                            } else if (std.mem.eql(u8, "circle", element_tag)) {
+                                var element = Circle{};
+                                try element.parse(att_names, att_vals);
+                                top_mut.override_from(element);
+                            } else if (std.mem.eql(u8, "ellipse", element_tag)) {
+                                var element = Ellipse{};
+                                try element.parse(att_names, att_vals);
+                                top_mut.override_from(element);
+                            } else if (std.mem.eql(u8, "line", element_tag)) {
+                                var element = Line{};
+                                try element.parse(att_names, att_vals);
+                                top_mut.override_from(element);
+                            } else if (std.mem.eql(u8, "polyline", element_tag)) {
+                                var element = PolyLine{};
+                                try element.parse(att_names, att_vals);
+                                top_mut.override_from(element);
+                            } else if (std.mem.eql(u8, "polygon", element_tag)) {
+                                var element = Polygon{};
+                                try element.parse(att_names, att_vals);
+                                top_mut.override_from(element);
+                            } else if (std.mem.eql(u8, "path", element_tag)) {
+                                var element = SvgPath{};
+                                try element.parse();
+                                top_mut.override_from(element);
+                            } else {
+                                std.log.warn("unrecognized element", .{element_tag});
+                            }
+
+                            _ = self.arena2.reset(.retain_capacity);
                         }
-                        if (std.mem.eql(u8, "rect", element_tag)) {
-                            var rect = Rect{};
-                            try rect.parse(att_names, att_vals);
-                        }
-                        const standard_parse: []const []const u8 = &.{
-                            "polygon",
-                            "polygon",
-                            "circle",
-                            "ellipse",
-                            "rect",
-                            "line",
-                        };
-                        _ = self.arena2.reset(.retain_capacity);
                     },
                     .element_end => {
                         _ = stack.pop();
-                        const element_name = reader.elementNameNs();
-                        std.log.warn(
-                            \\element_end:  {}
-                        , .{
-                            std.zig.fmtEscapes(element_name.local),
-                        });
                     },
                     else => {},
                     .eof => break,
@@ -1212,6 +1198,7 @@ pub fn SvgConverter(W: type) type {
         }
     };
 }
+
 pub fn tvg_from_svg(alloc: Allocator, writer: anytype, svg_bytes: []const u8) !void {
     var con = try SvgConverter(@TypeOf(writer)).init(alloc);
     try con.run(svg_bytes);
