@@ -105,32 +105,6 @@ const ViewBox = struct {
     }
 };
 
-test "convert to tvg" {
-    // if (true) return;
-    const gpa = std.testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-    // var output = std.io.getStdOut();
-
-    var file = try std.fs.cwd().createFile("test/mykk.tvg", .{});
-    try tvg_from_svg(alloc, file.writer(), icons.svg.lucide.play);
-    file.close();
-
-    var fileo = try std.fs.cwd().openFile("test/mykk.tvg", .{});
-    const w = 300;
-    const h = 300;
-    var image_wrapper = ImageWrapper{
-        .img = try Image.init(alloc, w, h),
-        .width = w,
-        .height = h,
-    };
-    const icon = try fileo.readToEndAlloc(alloc, 1024 * 1024);
-    try tvg.render(alloc, &image_wrapper, icon);
-    try image_wrapper.img.write_ppm_to_file("test/converted.ppm");
-    std.log.warn("ok", .{});
-}
-
 const InheritableProperties = struct {
     fill: ?Color = null, // Fill color
     @"fill-opacity": ?Color = null, // Opacity of the fill
@@ -1256,5 +1230,31 @@ test "make tvg og" {
     const icon = try fileo.readToEndAlloc(alloc, 1024 * 1024);
     try tvg.render(alloc, &image_wrapper, icon);
     try image_wrapper.img.write_ppm_to_file("test/gen.ppm");
+    std.log.warn("ok", .{});
+}
+
+test "convert to tvg" {
+    // if (true) return;
+    const gpa = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    // var output = std.io.getStdOut();
+
+    var file = try std.fs.cwd().createFile("test/mykk.tvg", .{});
+    try tvg_from_svg(alloc, file.writer(), icons.svg.lucide.play);
+    file.close();
+
+    var fileo = try std.fs.cwd().openFile("test/mykk.tvg", .{});
+    const w = 300;
+    const h = 300;
+    var image_wrapper = ImageWrapper{
+        .img = try Image.init(alloc, w, h),
+        .width = w,
+        .height = h,
+    };
+    const icon = try fileo.readToEndAlloc(alloc, 1024 * 1024);
+    try tvg.render(alloc, &image_wrapper, icon);
+    try image_wrapper.img.write_ppm_to_file("test/converted.ppm");
     std.log.warn("ok", .{});
 }
