@@ -12,6 +12,10 @@
         .icons = .{ .path = "../icons" },
         .tvg_sdk = .{ .path = "../tvg-sdk" },
         .image = .{ .path = "../image" },
+        .z2d = .{
+            .url = "https://github.com/vancluever/z2d/archive/362c87c09aa04c4ed6ab6d0145b796e818320490.zip",
+            .hash = "z2d-0.6.2-j5P_Hn7vCgCPqIJks2FXOyLZVSgoJE2qPXFJw1psPdKJ",
+        },
     },
     .paths = .{
         "build.zig",

@@ -28,10 +28,16 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }).module("image");
 
+    const module_z2d = b.dependency("z2d", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("z2d");
+
     this_module.addImport("xml", module_xml);
     this_module.addImport("icons", module_icons);
     this_module.addImport("tvg", module_tvg_sdk);
     this_module.addImport("image", module_image);
+    this_module.addImport("z2d", module_z2d);
 
     const tests = b.addRunArtifact(b.addTest(.{
         .root_module = this_module,

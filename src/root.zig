@@ -1013,36 +1013,34 @@ fn render_icon(
     svg_bytes: []const u8,
 ) !void {
     var w = std.ArrayList(u8).init(alloc);
-    tvg_from_svg(alloc, w.writer(), svg_bytes) catch unreachable;
-    //  |e| { std.log.warn("conversion error: {}", .{e});
-    // };
-    var image_wrapper = ImageWrapper{
+    tvg_from_svg(alloc, w.writer(), svg_bytes) catch |e| {
+        std.log.warn("conversion error: {}", .{e});
+        unreachable;
+    };
+    var image_wrapper = ImageWrapper2{
         .img = img,
         .width = @intCast(img.get_width()),
         .height = @intCast(img.get_height()),
     };
-    // const rimg = try tvg.rendering.renderBuffer(alloc, alloc, .{ .bounded = .{
-    //     .width = @intCast(img.get_width()),
-    //     .height = @intCast(img.get_height()),
-    // } }, .x1, w.items);
-    // for (0..img.get_height()) |y| {
-    //     for (0..img.get_width()) |x| {
-    //         const idx = y * img.get_width() + x;
-    //         const col = rimg.pixels[idx];
-    //         img.set_pixel(x, y, .{
-    //             .r = col.r,
-    //             .g = col.g,
-    //             .b = col.b,
-    //             .a = col.a,
-    //         });
-    //     }
-    // }
-    try tvg.render(alloc, &image_wrapper, w.items);
+    var fb = std.io.fixedBufferStream(w.items);
+    const ren = @import("render.zig");
+    try ren.renderStream(alloc, &image_wrapper, fb.reader());
+
+    // try tvg.render(alloc, &image_wrapper, w.items);
 }
+pub const ImageWrapper2 = struct {
+    width: i64,
+    height: i64,
+    img: *Image,
+    pub fn setPixel(self: *@This(), x: i64, y: i64, color: [4]u8) void {
+        const pix: Image.Pixel = .init_from_u8_slice(&color);
+        self.img.set_pixel(@intCast(x), @intCast(y), pix);
+    }
+};
 
 pub const make_node_debug = true and debug;
 pub const make_node_debug2 = false and debug;
-const debug = false;
+const debug = true;
 
 test "icon map" {
     // if (true) return;
@@ -1068,15 +1066,3 @@ test "icon map" {
     std.log.warn("{s}", .{iname});
     std.log.warn("{s}", .{icon_bytes});
 }
-// start: tinyvg.tinyvg.Point{ .x = 5e0, .y = 1.8e1 }
-// [default] (warn): node: vert -3.0316488e-13
-// [default] (warn): node: vert -3.0316488e-13
-// [default] (warn): node: vert -3.0316488e-13
-// [default] (warn): node: vert -3.0316488e-13
-// [default] (warn): node: vert -3.0316488e-13
-// [default] (warn): start: tinyvg.tinyvg.Point{ .x = 1.5e1, .y = 6e0 }
-// [default] (warn): node: line tinyvg.tinyvg.Point{ .x = 1.7e1, .y = 6e0 }
-// [default] (warn): node: arc_ellipse tinyvg.tinyvg.Path.Node.ArcEllipse{ .radius_x = 2e0, .radius_y = 2e0, .rotation = 0e0, .large_arc = false, .sweep = false, .target = tinyvg.tinyvg.Point{ .x = 1.9e1, .y = 8e0 } }
-// [default] (warn): node: line tinyvg.tinyvg.Point{ .x = 1.9e1, .y = 1.6e1 }
-// [default] (warn): node: arc_ellipse tinyvg.tinyvg.Path.Node.ArcEllipse{ .radius_x = 2e0, .radius_y = 2e0, .rotation = 0e0, .large_arc = false, .sweep = false, .target = tinyvg.tinyvg.Point{ .x = 1.7e1, .y = 1.8e1 } }
-// [default] (warn): node: line tinyvg.tinyvg.Point{ .x = 1.3809999e1, .y = 1.8e1 }
