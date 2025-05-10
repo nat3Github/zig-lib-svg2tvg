@@ -10,8 +10,6 @@ const utils = ut.utils;
 const ColorHash = ut.ColorHash;
 const Stack = ut.Stack;
 const NodeMaker = ut.NodeMaker;
-const ImageWrapper = ut.ImageWrapper;
-const Image = ut.Image;
 const ColMap = ut.ColMap;
 
 const svg_parsing = @import("svg.zig");
@@ -21,6 +19,7 @@ const tvg_og = @import("tvg");
 
 const tinyvg2 = @import("tinyvg/tinyvg.zig");
 pub const tvg = tinyvg2;
+pub const renderStream = @import("render.zig").renderStream;
 
 const Color = tvg.Color;
 const Path = tvg.Path;
@@ -958,3 +957,8 @@ pub fn tvg_from_svg(alloc: Allocator, writer: anytype, svg_bytes: []const u8) !v
 pub const make_node_debug = true and debug;
 pub const make_node_debug2 = false and debug;
 const debug = false;
+
+test "coverage" {
+    _ = .{ tvg_from_svg, SvgConverter, renderStream };
+    std.log.warn("ok", .{});
+}

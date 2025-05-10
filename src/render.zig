@@ -103,7 +103,7 @@ pub fn renderStream(
         }
     }
 }
-const ShimPainter = struct {
+pub const ShimPainter = struct {
     ctx: *z2d.Context,
     lwdef: f32,
     scalex: f32,
@@ -166,7 +166,7 @@ const ShimPainter = struct {
         );
     }
 };
-fn z2d_draw_seg(alloc: Allocator, ctx: *ShimPainter, seg: Segment) !void {
+pub fn z2d_draw_seg(alloc: Allocator, ctx: *ShimPainter, seg: Segment) !void {
     var p = seg.start;
     for (seg.commands) |cm| {
         switch (cm) {
@@ -310,7 +310,7 @@ pub fn flatten_into_path(alloc: Allocator, cmd: DrawCommand, og_width: f32, og_h
         },
     }
 }
-fn draw_rect(m: *ut.NodeMaker, rectangles: []const Rectangle) ![]const Segment {
+pub fn draw_rect(m: *ut.NodeMaker, rectangles: []const Rectangle) ![]const Segment {
     for (rectangles) |rect| {
         const x = rect.x;
         const y = rect.y;
@@ -327,7 +327,7 @@ fn draw_rect(m: *ut.NodeMaker, rectangles: []const Rectangle) ![]const Segment {
     }
     return &.{};
 }
-fn draw_points(m: *ut.NodeMaker, points: []const Point, close: bool) ![]const Segment {
+pub fn draw_points(m: *ut.NodeMaker, points: []const Point, close: bool) ![]const Segment {
     assert(points.len > 0);
     try m.move(points[0], false);
     for (points[1..]) |l| {
@@ -339,14 +339,14 @@ fn draw_points(m: *ut.NodeMaker, points: []const Point, close: bool) ![]const Se
     return segs;
 }
 
-fn get_color(table: []const Color, k: Style) !Color {
+pub fn get_color(table: []const Color, k: Style) !Color {
     if (k != .flat) return error.UnsupportedStyle;
     const i = math.cast(usize, k.flat) orelse return error.OOB;
     if (i >= table.len) return error.OOB;
     return table[i];
 }
 
-const Vec2 = struct {
+pub const Vec2 = struct {
     x: f64,
     y: f64,
     fn lerp(a: Vec2, b: Vec2, t: f64) Vec2 {
@@ -382,7 +382,7 @@ pub fn quadraticToCubicBezier(p0: Vec2, p1: Vec2, p2: Vec2) [4]Vec2 {
     return [_]Vec2{ c0, c1, c2, c3 };
 }
 
-fn angle(u: Vec2, v: Vec2) f64 {
+pub fn angle(u: Vec2, v: Vec2) f64 {
     const dot = u.x * v.x + u.y * v.y;
     const det = u.x * v.y - u.y * v.x;
     return math.atan2(det, dot);
@@ -483,7 +483,7 @@ pub fn arcToCubics(
     return out.toOwnedSlice();
 }
 
-fn apply(p: Vec2, phi: f64, cx: f64, cy: f64) Vec2 {
+pub fn apply(p: Vec2, phi: f64, cx: f64, cy: f64) Vec2 {
     const cos_phi = @cos(phi);
     const sin_phi = @sin(phi);
     return Vec2{
