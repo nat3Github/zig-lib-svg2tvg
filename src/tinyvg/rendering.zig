@@ -3,6 +3,7 @@
 //!
 
 const std = @import("std");
+const assert = std.debug.assert;
 const builtin = @import("builtin");
 const tvg = @import("tinyvg.zig");
 const parsing = tvg.parsing;
@@ -57,9 +58,7 @@ pub fn renderStream(
             .width = (height * parser.header.width) / parser.header.height,
             .height = height,
         },
-        .bounded => |bounds| calcBoundedSize(
-            bounds, parser.header.width, parser.header.height
-        ),
+        .bounded => |bounds| calcBoundedSize(bounds, parser.header.width, parser.header.height),
     };
 
     const super_scale: u32 = if (anti_alias) |factor|
@@ -664,6 +663,8 @@ pub fn renderEllipse(
     start_width: f32,
     end_width: f32,
 ) !void {
+    if (radius_y == 0) return error.RadiusYCantBeZero;
+
     // std.debug.print("renderEllipse(({d:.3} {d:.3}), ({d:.3} {d:.3}), {d:.2}, {d:.2}, {d:.4}, large={}, left={})\n", .{
     //     p0.x,
     //     p0.y,
@@ -678,16 +679,21 @@ pub fn renderEllipse(
 
     const radius_min = distance(p0, p1) / 2.0;
     const radius_lim = sqrt(radius_x * radius_x + radius_y * radius_y); // @min(std.math.fabs(radius_x), std.math.fabs(radius_y));
+    std.debug.assert(radius_lim != 0);
+    if (radius_lim == 0) return error.RadiusLimCantBeZero;
 
     const up_scale = if (radius_lim < radius_min)
         radius_min / radius_lim
     else
         1.0;
+    if (up_scale == 0) return error.UpScaleCantBeZero;
 
     // std.debug.print("radius_min={d} radius_lim={d} up_scale={d}\n", .{ radius_min, radius_lim, up_scale });
 
     // std.debug.print("{d} {d} {d}, {d} => {d}\n", .{ radius_x, radius_y, radius_lim, radius_min, up_scale });
 
+    std.debug.assert(radius_y != 0);
+    std.debug.assert(up_scale != 0);
     const ratio = radius_x / radius_y;
     const rot = rotationMat(toRadians(-rotation));
     const transform = [2][2]f32{
@@ -713,7 +719,7 @@ pub fn renderEllipse(
         .point_list = FixedBufferList(Point, circle_divs).init(null),
         .width_list = FixedBufferList(f32, circle_divs).init(null),
     };
-    renderCircle(
+    try renderCircle(
         &tmp,
         applyMat(transform, p0),
         applyMat(transform, p1),
@@ -722,7 +728,7 @@ pub fn renderEllipse(
         turn_left,
         start_width,
         end_width,
-    ) catch unreachable; // buffer is correctly sized
+    ); // buffer is correctly sized
 
     for (tmp.point_list.items(), tmp.width_list.items()) |p, w| {
         try point_list.append(applyMat(transform_back, p), w);
@@ -739,6 +745,9 @@ fn renderCircle(
     start_width: f32,
     end_width: f32,
 ) !void {
+    if (!(p1.x != p0.x and p1.y != p0.y)) return error.PointsAreEqual;
+    assert(p1.x != p0.x and p1.y != p0.y);
+    assert(radius != 0);
     var r = radius;
 
     // Whether the center should be to the left of the vector from p0 to p1
@@ -760,12 +769,15 @@ fn renderCircle(
         // return error.InvalidRadius;
     }
 
+    assert(len_squared - 1 != 0);
     const to_center = scale(radius_vec, sqrt(@max(0, r * r / len_squared - 1)));
     const center = add(midpoint, to_center);
 
+    assert(r != 0);
     const angle = std.math.asin(std.math.clamp(sqrt(len_squared) / r, -1.0, 1.0)) * 2;
     const arc = if (large_arc) (std.math.tau - angle) else angle;
 
+    assert(circle_divs != 0);
     const pos = sub(p0, center);
     for (0..circle_divs - 1) |i| {
         const step_mat = rotationMat(@as(f32, @floatFromInt(i)) * (if (turn_left) -arc else arc) / circle_divs);

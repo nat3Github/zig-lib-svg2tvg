@@ -89,7 +89,7 @@ pub const utils = struct {
     pub fn parsePointList(alloc: Allocator, property_name: []const u8, att: []const u8, val: []const u8) !?std.ArrayList(Point) {
         if (std.mem.eql(u8, property_name, att)) {
             var list = std.ArrayList(Point).init(alloc);
-            var split = std.mem.splitAny(u8, val, " ");
+            var split = std.mem.splitAny(u8, val, " ,");
             var point = Point{ .x = 0, .y = 0 };
             var k: bool = true;
             while (split.next()) |n| {
@@ -170,10 +170,12 @@ pub const NodeMaker = struct {
         if (self.flushed) return;
         self.flushed = true;
         const len = self.cmds.items.len;
+        const command_len = len - self.cmds_len;
+        if (command_len == 0) return;
         const iseg = IndexSegment{
             .start = self.m.first,
             .command_idx = self.cmds_len,
-            .command_len = len - self.cmds_len,
+            .command_len = command_len,
         };
         self.cmds_len = len;
         try self.iseg.append(iseg);
@@ -194,57 +196,48 @@ pub const NodeMaker = struct {
         if (make_node_debug) std.log.warn("line", .{});
         const nd = self.m.line(self.lw, p, rel);
         try self.cmds.append(nd);
-        if (make_node_debug) print_node(nd);
     }
     pub fn vert(self: *NodeMaker, f: f32, rel: bool) !void {
         if (make_node_debug) std.log.warn("ver", .{});
         const nd = self.m.vert(self.lw, f, rel);
         try self.cmds.append(nd);
-        if (make_node_debug) print_node(nd);
     }
     pub fn horiz(self: *NodeMaker, f: f32, rel: bool) !void {
         if (make_node_debug) std.log.warn("horiz", .{});
         const nd = self.m.horiz(self.lw, f, rel);
         try self.cmds.append(nd);
-        if (make_node_debug) print_node(nd);
     }
     pub fn quadratic_bezier_curve_to(self: *NodeMaker, c: Point, p: Point, rel: bool) !void {
         if (make_node_debug) std.log.warn("qbez", .{});
         const nd = self.m.quadratic_bezier_curve_to(self.lw, c, p, rel);
         try self.cmds.append(nd);
-        if (make_node_debug) print_node(nd);
     }
     pub fn curve_to(self: *NodeMaker, c1: Point, c2: Point, p: Point, rel: bool) !void {
         if (make_node_debug) std.log.warn("curve to", .{});
         const nd = self.m.curve_to(self.lw, c1, c2, p, rel);
         try self.cmds.append(nd);
-        if (make_node_debug) print_node(nd);
     }
     pub fn smooth_quadratic_bezier_curve_to(self: *NodeMaker, p: Point, rel: bool) !void {
         if (make_node_debug) std.log.warn("smooth quad", .{});
         const nd = try self.m.smooth_quadratic_bezier_curve_to(self.lw, p, rel);
         try self.cmds.append(nd);
-        if (make_node_debug) print_node(nd);
     }
     pub fn smooth_curve_to(self: *NodeMaker, c2: Point, p: Point, rel: bool) !void {
         if (make_node_debug) std.log.warn("smoot curve to", .{});
         const nd = try self.m.smooth_curve_to(self.lw, c2, p, rel);
         try self.cmds.append(nd);
-        if (make_node_debug) print_node(nd);
     }
     pub fn elliptical_arc(self: *NodeMaker, rx: f32, ry: f32, rotation: f32, large_arc: bool, sweep_cw: bool, p: Point, rel: bool) !void {
-        if (make_node_debug) std.log.warn("ell arc", .{});
+        if (make_node_debug) std.log.warn("elliptical arc", .{});
         const nd = self.m.elliptical_arc(self.lw, rx, ry, rotation, large_arc, sweep_cw, p, rel);
         try self.cmds.append(nd);
-        if (make_node_debug) print_node(nd);
     }
     pub fn circular_arc(self: *NodeMaker, r: f32, large_arc: bool, sweep_cw: bool, p: Point, rel: bool) !void {
         if (make_node_debug) std.log.warn("cirx arc", .{});
         const nd = self.m.circular_arc(self.lw, r, large_arc, sweep_cw, p, rel);
         try self.cmds.append(nd);
-        if (make_node_debug) print_node(nd);
     }
-    pub fn segments(self: *@This()) ![]const Segment {
+    pub fn segments(self: *@This()) !?[]const Segment {
         for (0..self.iseg.items.len) |_| {
             try self.seg.append(Segment{ .commands = &.{}, .start = .{ .x = 0, .y = 0 } });
         }
@@ -252,24 +245,47 @@ pub const NodeMaker = struct {
             sn.start = isn.start;
             sn.commands = self.cmds.items[isn.command_idx .. isn.command_idx + isn.command_len];
         }
+        if (self.seg.items.len == 0) return null;
         return self.seg.items;
     }
 };
 pub const make_node = struct {
-    control: ?Point = null,
+    last_control: ?Point = null,
     first: Point,
     cur: Point,
     vw: root.Svg,
+    fn set_last_control(self: *make_node, p: Point) void {
+        self.last_control = p;
+    }
+    fn get_reflection(self: *make_node, current: Point) Point {
+        if (self.last_control == null) return current;
+        const reflected = reflect_point(self.last_control.?, current);
+        return reflected;
+    }
+    fn reflect_point(prev_control: Point, current_pos: Point) Point {
+        return Point{
+            .x = 2 * current_pos.x - prev_control.x,
+            .y = 2 * current_pos.y - prev_control.y,
+        };
+    }
+    // print_point("current", current);
+    // print_point("last control", self.last_control.?);
+    // print_point("reflected", reflected);
+    fn reset_last_control(self: *make_node) void {
+        self.last_control = null;
+    }
 
     pub fn init(vw: root.Svg, p: Point) make_node {
         return make_node{
             .first = p,
             .cur = p,
-            .control = null,
+            .last_control = null,
             .vw = vw,
         };
     }
     fn add(x: f32, y: f32, rel: bool) f32 {
+        assert(!math.isNan(x));
+        assert(!math.isNan(y));
         if (rel) return x + y else return y;
     }
     fn addPoints(a: Point, b: Point, rel: bool) Point {
@@ -282,7 +298,7 @@ pub const make_node = struct {
     pub fn close(self: *make_node, lw: ?f32) Node {
         if (make_node_debug2) std.log.warn("make_node: close", .{});
         self.cur = addPoints(self.cur, self.first, true);
-        self.control = null;
+        self.reset_last_control();
         return Node{ .close = NodeData(void){
             .data = {},
             .line_width = lw,
@@ -292,11 +308,12 @@ pub const make_node = struct {
         if (make_node_debug2) std.log.warn("make_node: move", .{});
         self.cur = addPoints(self.cur, p, rel);
         self.first = self.cur;
-        self.control = null;
+        self.reset_last_control();
     }
     pub fn line(self: *make_node, lw: ?f32, p: Point, rel: bool) Node {
         if (make_node_debug2) std.log.warn("make_node: line", .{});
         self.cur = addPoints(self.cur, p, rel);
+        self.reset_last_control();
         return Node{ .line = NodeData(Point){
             .data = self.vw.transform(self.cur),
             .line_width = lw,
@@ -317,11 +334,12 @@ pub const make_node = struct {
 
     pub fn quadratic_bezier_curve_to(self: *make_node, lw: ?f32, c: Point, p: Point, rel: bool) Node {
         if (make_node_debug2) std.log.warn("make_node: quadratic_bezier_curve_to", .{});
-        self.control = addPoints(self.cur, c, rel);
+        const compute_c = addPoints(self.cur, c, rel);
         self.cur = addPoints(self.cur, p, rel);
+        self.set_last_control(compute_c);
         return Node{ .quadratic_bezier = NodeData(Node.QuadraticBezier){
             .data = Node.QuadraticBezier{
-                .c = self.vw.transform(self.control.?),
+                .c = self.vw.transform(compute_c),
                 .p1 = self.vw.transform(self.cur),
             },
             .line_width = lw,
@@ -329,14 +347,14 @@ pub const make_node = struct {
     }
     pub fn curve_to(self: *make_node, lw: ?f32, c1: Point, c2: Point, p: Point, rel: bool) Node {
         if (make_node_debug2) std.log.warn("make_node: curve_to", .{});
-        const c0 = addPoints(self.cur, c1, rel);
-        self.control = addPoints(self.cur, c2, rel);
+        const compute_c0 = addPoints(self.cur, c1, rel);
+        const compute_c1 = addPoints(self.cur, c2, rel);
         self.cur = addPoints(self.cur, p, rel);
-
+        self.set_last_control(compute_c1);
         return Node{ .bezier = NodeData(Node.Bezier){
             .data = Node.Bezier{
-                .c0 = self.vw.transform(c0),
-                .c1 = self.vw.transform(self.control.?),
+                .c0 = self.vw.transform(compute_c0),
+                .c1 = self.vw.transform(compute_c1),
                 .p1 = self.vw.transform(self.cur),
             },
             .line_width = lw,
@@ -345,9 +363,9 @@ pub const make_node = struct {
 
     pub fn smooth_quadratic_bezier_curve_to(self: *make_node, lw: ?f32, p: Point, rel: bool) !Node {
         if (make_node_debug2) std.log.warn("make_node: smooth_quadratic_bezier_curve_to", .{});
-        const reflected = reflect_point(self.control orelse self.cur, self.cur);
+        const reflected = self.get_reflection(self.cur);
         self.cur = addPoints(self.cur, p, rel);
-        self.control = reflected;
+        self.set_last_control(reflected);
         return Node{ .quadratic_bezier = NodeData(Node.QuadraticBezier){
             .data = Node.QuadraticBezier{
                 .c = self.vw.transform(reflected),
@@ -358,27 +376,23 @@ pub const make_node = struct {
     }
     pub fn smooth_curve_to(self: *make_node, lw: ?f32, c2: Point, p: Point, rel: bool) !Node {
         if (make_node_debug2) std.log.warn("make_node: smooth_curve_to", .{});
-        const c0 = reflect_point(self.control orelse self.cur, self.cur);
-        self.control = addPoints(self.cur, c2, rel);
+        const compute_c0 = self.get_reflection(self.cur);
+        const compute_c1 = addPoints(self.cur, c2, rel);
         self.cur = addPoints(self.cur, p, rel);
+        self.set_last_control(compute_c1);
         return Node{ .bezier = NodeData(Node.Bezier){
             .data = Node.Bezier{
-                .c0 = self.vw.transform(c0),
-                .c1 = self.vw.transform(self.control.?),
+                .c0 = self.vw.transform(compute_c0),
+                .c1 = self.vw.transform(compute_c1),
                 .p1 = self.vw.transform(self.cur),
             },
             .line_width = lw,
         } };
     }
-    fn reflect_point(prev_control: Point, current_pos: Point) Point {
-        return Point{
-            .x = 2 * current_pos.x - prev_control.x,
-            .y = 2 * current_pos.y - prev_control.y,
-        };
-    }
     pub fn elliptical_arc(self: *make_node, lw: ?f32, rx: f32, ry: f32, rotation: f32, large_arc: bool, sweep_ccw: bool, p: Point, rel: bool) Node {
         if (make_node_debug2) std.log.warn("make_node: elliptical_arc", .{});
         self.cur = addPoints(self.cur, p, rel);
+        self.reset_last_control();
         return Node{ .arc_ellipse = NodeData(Node.ArcEllipse){
             .data = Node.ArcEllipse{
                 .radius_x = rx,
@@ -394,6 +408,7 @@ pub const make_node = struct {
     pub fn circular_arc(self: *make_node, lw: ?f32, r: f32, large_arc: bool, sweep_ccw: bool, p: Point, rel: bool) Node {
         if (make_node_debug2) std.log.warn("make_node: circular_arc", .{});
         self.cur = addPoints(self.cur, p, rel);
+        self.reset_last_control();
         return Node{
             .arc_circle = NodeData(Node.ArcCircle){
                 .data = Node.ArcCircle{
@@ -433,6 +448,13 @@ pub const ColorHash = struct {
 
 pub const ColMap = std.AutoArrayHashMap(ColorHash, u32);
 
+pub fn print_point(
+    name: []const u8,
+    data: Point,
+) void {
+    return std.debug.print("{s} \n .x: {d:.2} \n .y: {d:.2}\n", .{ name, data.x, data.y });
+}
+
 fn kprint(
     name: []const u8,
     data: anytype,
@@ -442,7 +464,47 @@ fn kprint(
         return std.debug.print("{s} f:{d:.2}\n", .{ name, data });
     }
     if (comptime T == Point) {
-        return std.debug.print("{s} x: {d:.2} y: {d:.2}\n", .{ name, data.x, data.y });
+        print_point(name, data);
+    }
+    if (comptime T == Node.ArcEllipse) {
+        const ell_fmt =
+            \\{s}
+            \\  .radius_x: {d:.2},
+            \\  .radius_y: {d:.2},
+            \\  .rotation: {d:.2},
+            \\  .large_arc: {},
+            \\  .sweep: {},
+            \\  .target: x:{d:.2} y:{d:.2},
+            \\
+        ;
+        return std.debug.print(ell_fmt, .{
+            name,
+            data.radius_x,
+            data.radius_y,
+            data.rotation,
+            data.large_arc,
+            data.sweep,
+            data.target.x,
+            data.target.y,
+        });
+    }
+    if (comptime T == Node.Bezier) {
+        const ell_fmt =
+            \\{s}
+            \\  .c0: x:{d:.2} y:{d:.2},
+            \\  .c1: x:{d:.2} y:{d:.2},
+            \\  .p1: x:{d:.2} y:{d:.2},
+            \\
+        ;
+        return std.debug.print(ell_fmt, .{
+            name,
+            data.c0.x,
+            data.c0.y,
+            data.c1.x,
+            data.c1.y,
+            data.p1.x,
+            data.p1.y,
+        });
     }
     return std.debug.print("{s} {any}\n", .{ name, data });
 }

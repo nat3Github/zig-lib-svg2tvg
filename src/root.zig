@@ -238,7 +238,11 @@ pub const Svg = struct {
             .x = @floatCast(pp.x),
             .y = @floatCast(pp.y),
         };
-        return self.viewBox.transform(self.width.?, self.height.?, p);
+
+        const ret = self.viewBox.transform(self.width.?, self.height.?, p);
+        assert(math.isNormal(p.x));
+        assert(math.isNormal(p.y));
+        return ret;
     }
     pub fn point_from(self: *const @This(), coord: svg_parsing.CoordinatePair) Point {
         const p = Point{
@@ -790,11 +794,13 @@ pub fn SvgConverter(W: type) type {
 
             const colors_hash = self.colormap.keys();
             const colors = try self.arena1.allocator().alloc(Color, colors_hash.len);
-            std.log.warn("writing colortable: RGBA", .{});
+            if (debug)
+                std.log.warn("writing colortable: RGBA", .{});
             for (colors, colors_hash, 0..) |*v, v2, i| {
                 const c = v2.toColor();
                 v.* = c;
-                std.log.warn("- {} | [{d:.1} {d:.1} {d:.1} {d:.1}]", .{ i, c.r, c.g, c.b, c.a });
+                if (debug)
+                    std.log.warn("- {} | [{d:.1} {d:.1} {d:.1} {d:.1}]", .{ i, c.r, c.g, c.b, c.a });
             }
             try self.builder.writeColorTable(colors);
 
@@ -868,50 +874,63 @@ pub fn SvgConverter(W: type) type {
                                 var element = Rect{};
                                 try element.parse(&maker, att_names, att_vals);
                                 top_mut.override_from(element);
-                                try self.write_path(try maker.segments(), &stack);
+                                if (try maker.segments()) |segs| {
+                                    try self.write_path(segs, &stack);
+                                }
                             } else if (std.mem.eql(u8, "circle", element_tag)) {
                                 var element = Circle{};
                                 try element.parse(&maker, att_names, att_vals);
                                 top_mut.override_from(element);
-                                try self.write_path(try maker.segments(), &stack);
+                                if (try maker.segments()) |segs| {
+                                    try self.write_path(segs, &stack);
+                                }
                             } else if (std.mem.eql(u8, "ellipse", element_tag)) {
                                 var element = Ellipse{};
                                 try element.parse(&maker, att_names, att_vals);
                                 top_mut.override_from(element);
-                                try self.write_path(try maker.segments(), &stack);
+                                if (try maker.segments()) |segs| {
+                                    try self.write_path(segs, &stack);
+                                }
                             } else if (std.mem.eql(u8, "line", element_tag)) {
                                 var element = Line{};
                                 try element.parse(&maker, att_names, att_vals);
                                 top_mut.override_from(element);
-                                const segs = try maker.segments();
-                                try self.write_path(segs, &stack);
-                                // std.log.warn("line : {any}", .{segs});
+                                if (try maker.segments()) |segs| {
+                                    try self.write_path(segs, &stack);
+                                }
                             } else if (std.mem.eql(u8, "polyline", element_tag)) {
                                 var element = PolyLine{};
                                 try element.parse(&maker, garbage_alloc, att_names, att_vals);
                                 top_mut.override_from(element);
-                                try self.write_path(try maker.segments(), &stack);
+                                if (try maker.segments()) |segs| {
+                                    try self.write_path(segs, &stack);
+                                }
                             } else if (std.mem.eql(u8, "polygon", element_tag)) {
                                 var element = Polygon{};
                                 try element.parse(&maker, garbage_alloc, att_names, att_vals);
                                 top_mut.override_from(element);
-                                try self.write_path(try maker.segments(), &stack);
+                                if (try maker.segments()) |segs| {
+                                    try self.write_path(segs, &stack);
+                                }
                             } else if (std.mem.eql(u8, "path", element_tag)) {
                                 var element = SvgPath{};
                                 try element.parse(&maker, garbage_alloc, att_names, att_vals);
                                 top_mut.override_from(element);
-                                const segs = try maker.segments();
-                                try self.write_path(segs, &stack);
-                                if (debug) {
-                                    std.log.warn("seg", .{});
-                                    std.log.warn("path:", .{});
-                                    for (segs) |sg| {
-                                        std.log.warn("start: {any}", .{sg.start});
-                                        for (sg.commands) |sn| {
-                                            ut.print_node(sn);
+
+                                if (try maker.segments()) |segs| {
+                                    try self.write_path(segs, &stack);
+                                    try self.write_path(segs, &stack);
+                                    if (debug) {
+                                        std.log.warn("PRINT SEG BEGIN", .{});
+                                        for (segs) |sg| {
+                                            ut.print_point("start", sg.start);
+                                            for (sg.commands) |sn| {
+                                                ut.print_node(sn);
+                                            }
                                         }
+                                        std.log.warn("PRINT SEG END", .{});
                                     }
-                                }
+                                } else std.log.warn("no segments", .{});
                             } else {
                                 std.log.warn("unrecognized element: {s}", .{element_tag});
                             }
@@ -951,7 +970,9 @@ test "single test icon" {
 
     const arr = struct {
         pub const feathericons = icons.svg.feather;
+        pub const lucide = icons.svg.lucide;
     };
+    @setEvalBranchQuota(4000);
     inline for (@typeInfo(arr).@"struct".decls) |tname| {
         const T = @field(arr, tname.name);
         const idecls = @typeInfo(T).@"struct".decls;
@@ -963,7 +984,6 @@ test "single test icon" {
             inline for (idecls[offset..@min(idecls.len, offset + icons_nxn)], 0..) |decl, j| {
                 const icon_bytes = @field(T, decl.name);
                 try render_icon_patch(&img, alloc, icon_bytes, icons_n, j);
-                std.log.warn("ok", .{});
             }
             try img.write_ppm_to_file(try std.fmt.allocPrint(alloc, "test/{}-p{}.ppm", .{ T, i }));
             _ = arena.reset(.retain_capacity);
@@ -993,12 +1013,30 @@ fn render_icon(
     svg_bytes: []const u8,
 ) !void {
     var w = std.ArrayList(u8).init(alloc);
-    try tvg_from_svg(alloc, w.writer(), svg_bytes);
+    tvg_from_svg(alloc, w.writer(), svg_bytes) catch unreachable;
+    //  |e| { std.log.warn("conversion error: {}", .{e});
+    // };
     var image_wrapper = ImageWrapper{
         .img = img,
         .width = @intCast(img.get_width()),
         .height = @intCast(img.get_height()),
     };
+    // const rimg = try tvg.rendering.renderBuffer(alloc, alloc, .{ .bounded = .{
+    //     .width = @intCast(img.get_width()),
+    //     .height = @intCast(img.get_height()),
+    // } }, .x1, w.items);
+    // for (0..img.get_height()) |y| {
+    //     for (0..img.get_width()) |x| {
+    //         const idx = y * img.get_width() + x;
+    //         const col = rimg.pixels[idx];
+    //         img.set_pixel(x, y, .{
+    //             .r = col.r,
+    //             .g = col.g,
+    //             .b = col.b,
+    //             .a = col.a,
+    //         });
+    //     }
+    // }
     try tvg.render(alloc, &image_wrapper, w.items);
 }
 
@@ -1019,7 +1057,7 @@ test "icon map" {
 
     const feathericons = icons.svg.feather;
     const T = feathericons;
-    const icon_idx = 30;
+    const icon_idx = 31;
     const idecls = @typeInfo(T).@"struct".decls;
     const iname = idecls[icon_idx].name;
     const icon_bytes = @field(T, iname);
