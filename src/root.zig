@@ -16,6 +16,7 @@ const svg_parsing = @import("svg.zig");
 const xml = @import("xml");
 const icons = @import("icons");
 const tvg_og = @import("tvg");
+pub const z2d = @import("z2d");
 
 const tinyvg2 = @import("tinyvg/tinyvg.zig");
 pub const tvg = tinyvg2;
@@ -523,6 +524,7 @@ const Polygon = struct {
                 self.points = res.items;
             }
         }
+        if (self.points.len < 3) return error.PolygonHasLessThan3Points;
         for (self.points, 0..) |p, i| {
             if (i == 0) {
                 try maker.move(.{ .x = p.x, .y = p.y }, false);
@@ -956,7 +958,7 @@ pub fn tvg_from_svg(alloc: Allocator, writer: anytype, svg_bytes: []const u8) !v
 
 pub const make_node_debug = true and debug;
 pub const make_node_debug2 = false and debug;
-const debug = false;
+const debug = true;
 
 test "coverage" {
     _ = .{ tvg_from_svg, SvgConverter, renderStream };

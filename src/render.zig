@@ -76,12 +76,22 @@ pub fn renderStream(
 
         for (segs) |seg| {
             if (props.fill) |fill| {
+                // ut.print_point("start", seg.start);
+                // for (seg.commands) |n| {
+                //     ut.print_node(n);
+                // }
+                mtx.close_action = .fill;
                 mtx.setColor(fill);
                 try mtx.moveTo(.from(seg.start));
                 try z2d_draw_seg(alloc, &mtx, seg);
                 try mtx.ctx.fill();
             }
             if (props.stroke) |stroke| {
+                // ut.print_point("start", seg.start);
+                // for (seg.commands) |n| {
+                //     ut.print_node(n);
+                // }
+                mtx.close_action = .stroke;
                 mtx.setColor(stroke);
                 try mtx.moveTo(.from(seg.start));
                 try z2d_draw_seg(alloc, &mtx, seg);
@@ -103,11 +113,13 @@ pub fn renderStream(
         }
     }
 }
+const CloseAction = enum { fill, stroke };
 pub const ShimPainter = struct {
     ctx: *z2d.Context,
     lwdef: f32,
     scalex: f32,
     scaley: f32,
+    close_action: CloseAction = .stroke,
     col: Color = Color{
         .r = 0,
         .g = 0,
@@ -134,10 +146,16 @@ pub const ShimPainter = struct {
         self.ctx.setLineWidth(@floatCast(sc * f));
     }
     fn close(self: *ShimPainter) !void {
+        // std.log.warn("close", .{});
         const ctx = self.ctx;
         try ctx.closePath();
+        // switch (self.close_action) {
+        //     .fill => try ctx.fill(),
+        //     .stroke => try ctx.stroke(),
+        // }
     }
     fn moveTo(self: *ShimPainter, p: Vec2) !void {
+        // std.log.warn("moveTo {}, {}", .{ p.x, p.y });
         const ctx = self.ctx;
         const pt = self.tranform(p);
         try ctx.moveTo(pt.x, pt.y);
@@ -145,12 +163,16 @@ pub const ShimPainter = struct {
         self.ctx.setLineJoinMode(.round);
     }
     fn lineTo(self: *ShimPainter, p: Vec2, lw: ?f32) !void {
+        // std.log.warn("lineTo {}, {}", .{ p.x, p.y });
         const ctx = self.ctx;
-        const pt = self.tranform(p);
+        var pt = self.tranform(p);
+        // workaround for z2d bug
+        pt.x -= 0.01;
         self.setlw(lw);
         try ctx.lineTo(pt.x, pt.y);
     }
     fn bezier(self: *ShimPainter, c0: Vec2, c1: Vec2, end: Vec2, lw: ?f32) !void {
+        // std.log.warn("bezier", .{});
         const ctx = self.ctx;
         self.setlw(lw);
         const c0t = self.tranform(c0);
@@ -166,11 +188,24 @@ pub const ShimPainter = struct {
         );
     }
 };
+// fn diff(a: f32, b: f32) bool {
+//     // assert(math.isNormal(a));
+//     // assert(math.isNormal(b));
+//     // const k = @abs(a - b);
+//     // return k > 0.1;
+//     return a != b;
+// }
+
+// fn diffPoint(a: Point, b: Point) bool {
+//     return diff(a.x, b.x) and diff(a.y, b.y);
+// }
 pub fn z2d_draw_seg(alloc: Allocator, ctx: *ShimPainter, seg: Segment) !void {
     var p = seg.start;
     for (seg.commands) |cm| {
         switch (cm) {
-            .close => |_| try ctx.close(),
+            .close => |_| {
+                try ctx.close();
+            },
             .line => |a| {
                 p = a.data;
                 try ctx.lineTo(.from(p), a.line_width);

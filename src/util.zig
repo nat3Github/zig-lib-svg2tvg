@@ -151,7 +151,7 @@ pub const NodeMaker = struct {
         alloc: Allocator,
         svg: root.Svg,
     ) NodeMaker {
-        const m = make_node.init(svg, Point{ .x = 0, .y = 0 });
+        const m = make_node.init(svg);
         return NodeMaker{
             .m = m,
             .cmds = std.ArrayList(Node).init(alloc),
@@ -179,6 +179,7 @@ pub const NodeMaker = struct {
         };
         self.cmds_len = len;
         try self.iseg.append(iseg);
+        self.m.reset();
     }
     pub fn close(self: *NodeMaker) !void {
         if (make_node_debug) std.log.warn("close", .{});
@@ -251,8 +252,8 @@ pub const NodeMaker = struct {
 };
 pub const make_node = struct {
     last_control: ?Point = null,
-    first: Point,
-    cur: Point,
+    first: Point = Point{ .x = 0, .y = 0 },
+    cur: Point = Point{ .x = 0, .y = 0 },
     vw: root.Svg,
     fn set_last_control(self: *make_node, p: Point) void {
         self.last_control = p;
@@ -274,11 +275,13 @@ pub const make_node = struct {
     fn reset_last_control(self: *make_node) void {
         self.last_control = null;
     }
+    fn reset(self: *make_node) void {
+        self.reset_last_control();
+        self.cur = Point{ .x = 0, .y = 0 };
+    }
 
-    pub fn init(vw: root.Svg, p: Point) make_node {
+    pub fn init(vw: root.Svg) make_node {
         return make_node{
-            .first = p,
-            .cur = p,
             .last_control = null,
             .vw = vw,
         };
@@ -297,7 +300,7 @@ pub const make_node = struct {
 
     pub fn close(self: *make_node, lw: ?f32) Node {
         if (make_node_debug2) std.log.warn("make_node: close", .{});
-        self.cur = addPoints(self.cur, self.first, true);
+        self.cur = self.first;
         self.reset_last_control();
         return Node{ .close = NodeData(void){
             .data = {},
@@ -464,7 +467,7 @@ fn kprint(
         return std.debug.print("{s} f:{d:.2}\n", .{ name, data });
     }
     if (comptime T == Point) {
-        print_point(name, data);
+        return print_point(name, data);
     }
     if (comptime T == Node.ArcEllipse) {
         const ell_fmt =

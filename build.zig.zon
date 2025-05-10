@@ -9,10 +9,11 @@
             .url = "https://github.com/ianprime0509/zig-xml/archive/c2b02045810108e7a807855dc592157f44d32fb1.zip",
             .hash = "xml-0.1.0-ZTbP35VkAgAp2cDlvsPuL7SWVZWwPg-V99LmVRSHbCtL",
         },
-        .z2d = .{
-            .url = "https://github.com/vancluever/z2d/archive/362c87c09aa04c4ed6ab6d0145b796e818320490.zip",
-            .hash = "z2d-0.6.2-j5P_Hn7vCgCPqIJks2FXOyLZVSgoJE2qPXFJw1psPdKJ",
-        },
+        // .z2d = .{
+        //     .url = "https://github.com/vancluever/z2d/archive/362c87c09aa04c4ed6ab6d0145b796e818320490.zip",
+        //     .hash = "z2d-0.6.2-j5P_Hn7vCgCPqIJks2FXOyLZVSgoJE2qPXFJw1psPdKJ",
+        // },
+        .z2d = .{ .path = "../z2d" },
     },
     .paths = .{
         "build.zig",
