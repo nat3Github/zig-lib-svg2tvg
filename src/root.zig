@@ -5,6 +5,14 @@ const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
 const math = std.math;
 // const root = @import("../root.zig");
+const ut = @import("util.zig");
+const utils = ut.utils;
+const ColorHash = ut.ColorHash;
+const Stack = ut.Stack;
+const NodeMaker = ut.NodeMaker;
+const ImageWrapper = ut.ImageWrapper;
+const Image = ut.Image;
+const ColMap = ut.ColMap;
 
 const svg_parsing = @import("svg.zig");
 const xml = @import("xml");
@@ -12,7 +20,7 @@ const icons = @import("icons");
 const tvg_og = @import("tvg");
 
 const tinyvg2 = @import("tinyvg/tinyvg.zig");
-const tvg = tinyvg2;
+pub const tvg = tinyvg2;
 
 const Color = tvg.Color;
 const Path = tvg.Path;
@@ -24,55 +32,6 @@ const Scale = tvg.Scale;
 const Range = tvg.Range;
 const Style = tvg.Style;
 
-const Image = @import("image");
-const ImageWrapper = struct {
-    width: i64,
-    height: i64,
-    img: *Image,
-    pub fn setPixel(self: *@This(), x: i64, y: i64, color: tvg.Color) void {
-        const col = color.toRgba8();
-        const pix: Image.Pixel = .init_from_u8_slice(&col);
-        self.img.set_pixel(@intCast(x), @intCast(y), pix);
-    }
-};
-
-pub fn Stack(T: type) type {
-    return struct {
-        data: []T,
-        pos: usize = 0,
-        pub fn init(alloc: Allocator, size: usize) !@This() {
-            return @This(){
-                .data = try alloc.alloc(T, size),
-            };
-        }
-        pub fn deinit(self: *@This(), alloc: Allocator) void {
-            alloc.free(self.data);
-        }
-        pub fn push(self: *@This(), t: T) !void {
-            if (self.pos > self.data.len) return error.OutOfBounds;
-            self.data[self.pos] = t;
-            self.pos += 1;
-        }
-        pub fn pop(self: *@This()) ?T {
-            if (self.pos == 0) return null;
-            const xtop = self.top();
-            self.pos -= 1;
-            return xtop;
-        }
-        pub fn top(self: *const @This()) ?T {
-            if (self.pos == 0) return null;
-            return self.data[self.pos - 1];
-        }
-        pub fn top_mut(self: *@This()) ?*T {
-            if (self.pos == 0) return null;
-            return &self.data[self.pos - 1];
-        }
-    };
-}
-fn normalize_u8(u: u8) f32 {
-    const x: f32 = @floatFromInt(u);
-    return x / 255.0;
-}
 pub const SvgColorAttribute = enum {
     none,
     inherit,
@@ -107,6 +66,10 @@ pub const SvgColor = union(SvgColorTag) {
         return SvgColor{
             .col = Color_from(svg_parsing.Color.parse(val).color, 1.0),
         };
+    }
+    fn normalize_u8(u: u8) f32 {
+        const x: f32 = @floatFromInt(u);
+        return x / 255.0;
     }
     fn Color_from(col: svg_parsing.Color, alpha_normalized: f32) Color {
         return Color{
@@ -224,317 +187,8 @@ const SvgTag = enum(u8) {
     // image,
     // marker,
 };
-pub const utils = struct {
-    pub fn has_field(T: type, comptime name: []const u8) bool {
-        comptime {
-            for (@typeInfo(T).@"struct".fields) |field| {
-                if (std.mem.eql(u8, field.name, name)) return true;
-            }
-            return false;
-        }
-    }
-    pub fn parseFloat(property_name: []const u8, att: []const u8, val: []const u8) !?f32 {
-        if (std.mem.eql(u8, property_name, att)) {
-            return try std.fmt.parseFloat(f32, val);
-        }
-        return null;
-    }
-    pub fn parsePointList(alloc: Allocator, property_name: []const u8, att: []const u8, val: []const u8) !?std.ArrayList(Point) {
-        if (std.mem.eql(u8, property_name, att)) {
-            var list = std.ArrayList(Point).init(alloc);
-            var split = std.mem.splitAny(u8, val, " ");
-            var point = Point{ .x = 0, .y = 0 };
-            var k: bool = true;
-            while (split.next()) |n| {
-                const v = try std.fmt.parseFloat(f32, n);
-                if (k) point.x = v else point.y = v;
-                if (!k) try list.append(point);
-                k = !k;
-            }
-            if (!k) return error.ListLenUneven;
-            return list;
-        }
-        return null;
-    }
-    pub fn parseColor(property_name: []const u8, att: []const u8, val: []const u8) !?SvgColor {
-        if (std.mem.eql(u8, property_name, att)) {
-            return SvgColor.parseColor(val);
-        }
-        return null;
-    }
-    pub fn auto_parse_def(T: type, self: *T, Def: type, att: []const u8, val: []const u8) !void {
-        const decls = @typeInfo(Def).@"struct".decls;
-        if (comptime decls.len == 0) @compileLog(Def);
-        inline for (decls) |decl| {
-            if (comptime has_field(T, decl.name)) {
-                const declT = @TypeOf(@field(Def, decl.name));
-                if (comptime declT == f32 or declT == ?f32) {
-                    const v = try parseFloat(decl.name, att, val);
-                    if (v) |a| @field(self, decl.name) = a;
-                }
-                if (comptime declT == SvgColor or declT == ?SvgColor) {
-                    const v = try parseColor(decl.name, att, val);
-                    if (v) |a| @field(self, decl.name) = a;
-                }
-            }
-        }
-    }
-    pub fn toPoint(cord: svg_parsing.CoordinatePair) Point {
-        return Point{
-            .x = fromNumber(cord.coordinates[0].number),
-            .y = fromNumber(cord.coordinates[1].number),
-        };
-    }
-    pub fn fromNumber(number: svg_parsing.Number) f32 {
-        return @floatCast(number.value);
-    }
-};
-pub const NodeMaker = struct {
-    m: make_node,
-    cmds: *std.ArrayList(Node),
-    seg: *std.ArrayList(Segment),
-    cmds_len: usize,
-    seg_len: usize,
-    flushed: bool = true,
-    lw: ?f32 = null,
 
-    pub fn init(
-        m: make_node,
-        cmds: *std.ArrayList(Node),
-        seg: *std.ArrayList(Segment),
-    ) NodeMaker {
-        return NodeMaker{
-            .cmds = cmds,
-            .seg = seg,
-            .cmds_len = cmds.items.len,
-            .seg_len = seg.items.len,
-            .m = m,
-        };
-    }
-    pub fn flush(self: *NodeMaker) !void {
-        if (self.flushed) return;
-        self.flushed = true;
-        const cm = self.cmds.items[self.cmds_len..];
-        self.cmds_len = self.cmds.items.len;
-        const seg = Segment{
-            .start = self.m.first,
-            .commands = cm,
-        };
-        try self.seg.append(seg);
-    }
-    pub fn close(self: *NodeMaker) !void {
-        const nd = self.m.close(self.lw);
-        try self.cmds.append(nd);
-        try self.flush();
-    }
-    pub fn move(self: *NodeMaker, p: Point, rel: bool) !void {
-        try self.flush();
-        self.flushed = false;
-        self.m.move(p, rel);
-    }
-    pub fn line(self: *NodeMaker, p: Point, rel: bool) !void {
-        const nd = self.m.line(self.lw, p, rel);
-        try self.cmds.append(nd);
-    }
-    pub fn vert(self: *NodeMaker, f: f32, rel: bool) !void {
-        const nd = self.m.vert(self.lw, f, rel);
-        try self.cmds.append(nd);
-    }
-    pub fn horiz(self: *NodeMaker, f: f32, rel: bool) !void {
-        const nd = self.m.horiz(self.lw, f, rel);
-        try self.cmds.append(nd);
-    }
-    pub fn quadratic_bezier_curve_to(self: *NodeMaker, c: Point, p: Point, rel: bool) !void {
-        const nd = self.m.quadratic_bezier_curve_to(self.lw, c, p, rel);
-        try self.cmds.append(nd);
-    }
-    pub fn curve_to(self: *NodeMaker, c1: Point, c2: Point, p: Point, rel: bool) !void {
-        const nd = self.m.curve_to(self.lw, c1, c2, p, rel);
-        try self.cmds.append(nd);
-    }
-    pub fn smooth_quadratic_bezier_curve_to(self: *NodeMaker, p: Point, rel: bool) !void {
-        const nd = try self.m.smooth_quadratic_bezier_curve_to(self.lw, p, rel);
-        try self.cmds.append(nd);
-    }
-    pub fn smooth_curve_to(self: *NodeMaker, c2: Point, p: Point, rel: bool) !void {
-        const nd = try self.m.smooth_curve_to(self.lw, c2, p, rel);
-        try self.cmds.append(nd);
-    }
-    pub fn elliptical_arc(self: *NodeMaker, rx: f32, ry: f32, rotation: f32, large_arc: bool, sweep_ccw: bool, p: Point, rel: bool) !void {
-        const nd = self.m.elliptical_arc(self.lw, rx, ry, rotation, large_arc, sweep_ccw, p, rel);
-        try self.cmds.append(nd);
-    }
-    pub fn circular_arc(self: *NodeMaker, r: f32, large_arc: bool, sweep_ccw: bool, p: Point, rel: bool) !void {
-        const nd = self.m.circular_arc(self.lw, r, large_arc, sweep_ccw, p, rel);
-        try self.cmds.append(nd);
-    }
-    pub fn current_segments(self: *@This()) []const Segment {
-        const segm = self.seg.items[self.seg_len..self.seg.items.len];
-        self.seg_len = self.seg.items.len;
-        return segm;
-    }
-};
-
-pub const make_node = struct {
-    control: ?Point = null,
-    first: Point,
-    cur: Point,
-    vw: *const Svg,
-
-    pub fn init(vw: *const Svg, p: Point) make_node {
-        return make_node{
-            .first = p,
-            .cur = p,
-            .control = null,
-            .vw = vw,
-        };
-    }
-    fn add(x: f32, y: f32, rel: bool) f32 {
-        if (rel) return x + y else return y;
-    }
-    fn addPoints(a: Point, b: Point, rel: bool) Point {
-        return Point{
-            .x = add(a.x, b.x, rel),
-            .y = add(a.y, b.y, rel),
-        };
-    }
-
-    pub fn close(self: *make_node, lw: ?f32) Node {
-        self.cur = addPoints(self.cur, self.first, true);
-        self.control = null;
-        return Node{ .close = NodeData(void){
-            .data = {},
-            .line_width = lw,
-        } };
-    }
-    pub fn move(self: *make_node, p: Point, rel: bool) void {
-        self.cur = addPoints(self.cur, p, rel);
-        self.first = self.cur;
-        self.control = null;
-    }
-    pub fn line(self: *make_node, lw: ?f32, p: Point, rel: bool) Node {
-        self.cur = addPoints(self.cur, p, rel);
-        return Node{ .line = NodeData(Point){
-            .data = self.vw.transform(self.cur),
-            .line_width = lw,
-        } };
-    }
-    pub fn vert(self: *make_node, lw: ?f32, f: f32, rel: bool) Node {
-        var p = self.cur;
-        p.y = add(self.cur.y, f, rel);
-        return self.line(lw, p, false);
-    }
-    pub fn horiz(self: *make_node, lw: ?f32, f: f32, rel: bool) Node {
-        var p = self.cur;
-        p.x = add(self.cur.x, f, rel);
-        return self.line(lw, p, false);
-    }
-
-    pub fn quadratic_bezier_curve_to(self: *make_node, lw: ?f32, c: Point, p: Point, rel: bool) Node {
-        self.cur = addPoints(self.cur, p, rel);
-        self.control = addPoints(self.cur, c, rel);
-        return Node{ .quadratic_bezier = NodeData(Node.QuadraticBezier){
-            .data = Node.QuadraticBezier{
-                .c = self.vw.transform(self.control.?),
-                .p1 = self.vw.transform(self.cur),
-            },
-            .line_width = lw,
-        } };
-    }
-    pub fn curve_to(self: *make_node, lw: ?f32, c1: Point, c2: Point, p: Point, rel: bool) Node {
-        self.cur = addPoints(self.cur, p, rel);
-        self.control = addPoints(self.cur, c2, rel);
-        const c0 = addPoints(self.cur, c1, rel);
-
-        return Node{ .bezier = NodeData(Node.Bezier){
-            .data = Node.Bezier{
-                .c0 = self.vw.transform(c0),
-                .c1 = self.vw.transform(self.control.?),
-                .p1 = self.vw.transform(self.cur),
-            },
-            .line_width = lw,
-        } };
-    }
-
-    pub fn smooth_quadratic_bezier_curve_to(self: *make_node, lw: ?f32, p: Point, rel: bool) !Node {
-        self.cur = addPoints(self.cur, p, rel);
-        return Node{ .quadratic_bezier = NodeData(Node.QuadraticBezier){
-            .data = Node.QuadraticBezier{
-                .c = self.vw.transform(self.control orelse return error.NoPrevControlPoint),
-                .p1 = self.vw.transform(self.cur),
-            },
-            .line_width = lw,
-        } };
-    }
-    pub fn smooth_curve_to(self: *make_node, lw: ?f32, c2: Point, p: Point, rel: bool) !Node {
-        self.cur = addPoints(self.cur, p, rel);
-        const c0 = reflect_point(self.control orelse return error.NoPrevControlPoint, self.cur);
-        self.control = addPoints(self.cur, c2, rel);
-        return Node{ .bezier = NodeData(Node.Bezier){
-            .data = Node.Bezier{
-                .c0 = self.vw.transform(c0),
-                .c1 = self.vw.transform(self.control.?),
-                .p1 = self.vw.transform(p),
-            },
-            .line_width = lw,
-        } };
-    }
-    pub fn elliptical_arc(self: *make_node, lw: ?f32, rx: f32, ry: f32, rotation: f32, large_arc: bool, sweep_ccw: bool, p: Point, rel: bool) Node {
-        self.cur = addPoints(self.cur, p, rel);
-        return Node{ .arc_ellipse = NodeData(Node.ArcEllipse){
-            .data = Node.ArcEllipse{
-                .radius_x = rx,
-                .radius_y = ry,
-                .rotation = rotation,
-                .large_arc = large_arc,
-                .sweep = !sweep_ccw,
-                .target = self.vw.transform(self.cur),
-            },
-            .line_width = lw,
-        } };
-    }
-    pub fn circular_arc(self: *make_node, lw: ?f32, r: f32, large_arc: bool, sweep_ccw: bool, p: Point, rel: bool) Node {
-        self.cur = addPoints(self.cur, p, rel);
-        return Node{
-            .arc_circle = NodeData(Node.ArcCircle){
-                .data = Node.ArcCircle{
-                    .large_arc = large_arc,
-                    .radius = r,
-                    .sweep = !sweep_ccw,
-                    .target = self.vw.transform(self.cur),
-                },
-                .line_width = lw,
-            },
-        };
-    }
-};
-
-pub const ColorHash = struct {
-    r: u8,
-    g: u8,
-    b: u8,
-    a: u8,
-    pub fn fromColor(col: Color) @This() {
-        return @This(){
-            .r = @intFromFloat(std.math.clamp(col.r, 0, 1) * 255),
-            .g = @intFromFloat(std.math.clamp(col.g, 0, 1) * 255),
-            .b = @intFromFloat(std.math.clamp(col.b, 0, 1) * 255),
-            .a = @intFromFloat(std.math.clamp(col.a, 0, 1) * 255),
-        };
-    }
-    pub fn toColor(self: *const @This()) Color {
-        return Color{
-            .r = @as(f32, @floatFromInt(self.r)) / 255.0,
-            .g = @as(f32, @floatFromInt(self.g)) / 255.0,
-            .b = @as(f32, @floatFromInt(self.b)) / 255.0,
-            .a = @as(f32, @floatFromInt(self.a)) / 255.0,
-        };
-    }
-};
-
-const ColMap = std.AutoArrayHashMap(ColorHash, u32);
-
-const Svg = struct {
+pub const Svg = struct {
     pub const xmlns = "http://www.w3.org/2000/svg";
     x: f32 = 0,
     y: f32 = 0,
@@ -594,12 +248,6 @@ const Svg = struct {
         return self.viewBox.transform(@floatFromInt(self.width.?), @floatFromInt(self.height.?), p);
     }
 };
-fn reflect_point(prev_control: Point, current_pos: Point) Point {
-    return Point{
-        .x = 2 * current_pos.x - prev_control.x,
-        .y = 2 * current_pos.y - prev_control.y,
-    };
-}
 pub const ColorProperties: []const []const u8 = &.{
     "fill",
     "stroke",
@@ -648,8 +296,8 @@ const Rect = struct {
             try utils.auto_parse_def(@This(), self, Def, a, v);
         }
         if (self.width == null or self.height == null) return error.RectWithoutDimensions;
-        const yline_len = @min(0, self.height.? - self.ry * 2);
-        const xline_len = @min(0, self.width.? - self.rx * 2);
+        const yline_len = @max(0, self.height.? - self.ry * 2);
+        const xline_len = @max(0, self.width.? - self.rx * 2);
         var p = Point{
             .x = self.x + self.rx,
             .y = self.y,
@@ -659,22 +307,22 @@ const Rect = struct {
         try maker.line(p, false);
         p.x += self.rx;
         p.y += self.ry;
-        try maker.elliptical_arc(self.rx, self.ry, 0, false, false, p, false);
+        try maker.elliptical_arc(self.rx, self.ry, 0, false, true, p, false);
         p.y += yline_len;
         try maker.line(p, false);
         p.x += -self.rx;
         p.y += self.ry;
-        try maker.elliptical_arc(self.rx, self.ry, 0, false, false, p, false);
+        try maker.elliptical_arc(self.rx, self.ry, 0, false, true, p, false);
         p.x += -xline_len;
         try maker.line(p, false);
         p.x += -self.rx;
         p.y += -self.ry;
-        try maker.elliptical_arc(self.rx, self.ry, 0, false, false, p, false);
+        try maker.elliptical_arc(self.rx, self.ry, 0, false, true, p, false);
         p.y += -yline_len;
         try maker.line(p, false);
         p.x += self.rx;
         p.y += -self.ry;
-        try maker.elliptical_arc(self.rx, self.ry, 0, false, false, p, false);
+        try maker.elliptical_arc(self.rx, self.ry, 0, false, true, p, false);
         try maker.flush();
     }
 };
@@ -792,9 +440,16 @@ const Line = struct {
         const ay = self.y1 orelse return error.MissingLineParameter;
         const bx = self.x2 orelse return error.MissingLineParameter;
         const by = self.y2 orelse return error.MissingLineParameter;
-
-        try maker.move(.{ .x = ax, .y = ay }, false);
-        try maker.line(.{ .x = bx, .y = by }, false);
+        const p1 = Point{
+            .x = ax,
+            .y = ay,
+        };
+        const p2 = Point{
+            .x = bx,
+            .y = by,
+        };
+        try maker.move(p1, false);
+        try maker.line(p2, false);
         try maker.flush();
     }
 };
@@ -912,7 +567,6 @@ const SvgPath = struct {
                                 try maker.move(p, v.relative);
                             }
                         },
-
                         .close_path => |_| {
                             try maker.close();
                         },
@@ -1013,9 +667,6 @@ pub fn SvgConverter(W: type) type {
         colormap: ColMap,
         svg: Svg = Svg{},
         builder: Builder,
-        maker: NodeMaker = undefined,
-        cmds: std.ArrayList(Node),
-        seg: std.ArrayList(Segment),
 
         default_stroke_width: f32 = 2,
         default_color: SvgColor =
@@ -1029,16 +680,12 @@ pub fn SvgConverter(W: type) type {
                 .arena1 = std.heap.ArenaAllocator.init(alloc),
                 .arena2 = std.heap.ArenaAllocator.init(alloc),
                 .colormap = ColMap.init(alloc),
-                .cmds = std.ArrayList(Node).init(alloc),
-                .seg = std.ArrayList(Segment).init(alloc),
             };
         }
         pub fn deinit(self: *@This()) @This() {
             self.arena1.deinit();
             self.arena2.deinit();
             self.colormap.deinit();
-            self.cmds.deinit();
-            self.seg.deinit();
         }
         pub fn write_path(
             self: *@This(),
@@ -1184,8 +831,6 @@ pub fn SvgConverter(W: type) type {
                         if (!found_svg_tag) {
                             if (std.mem.eql(u8, "svg", element_tag)) {
                                 found_svg_tag = true;
-                                const makenode = make_node.init(&self.svg, Point{ .x = 0, .y = 0 });
-                                self.maker = NodeMaker.init(makenode, &self.cmds, &self.seg);
                                 try stack.push(current_properties);
                                 const top_mut = stack.top_mut().?;
                                 top_mut.override_from(self.svg);
@@ -1194,13 +839,14 @@ pub fn SvgConverter(W: type) type {
                         } else {
                             try stack.push(current_properties);
                             const top_mut = stack.top_mut().?;
+                            const garbage_alloc = self.arena2.allocator();
+                            var maker = NodeMaker.init(garbage_alloc, self.svg);
 
                             // std.log.warn(
                             //     \\element_start:  {}
                             // , .{
                             //     std.zig.fmtEscapes(element_name.local),
                             // });
-                            const garbage_alloc = self.arena2.allocator();
 
                             const att_count = reader.reader.attributeCount();
                             const att_names = try self.arena2.allocator().alloc([]const u8, att_count);
@@ -1215,54 +861,54 @@ pub fn SvgConverter(W: type) type {
                                 var element = G{};
                                 try element.parse(att_names, att_vals);
                                 top_mut.override_from(element);
+                                continue;
                             } else
                             // Drawing Primitives
                             if (std.mem.eql(u8, "rect", element_tag)) {
                                 var element = Rect{};
-                                try element.parse(&self.maker, att_names, att_vals);
+                                try element.parse(&maker, att_names, att_vals);
                                 top_mut.override_from(element);
-                                try self.write_path(self.maker.current_segments(), &stack);
+                                try self.write_path(try maker.segments(), &stack);
                             } else if (std.mem.eql(u8, "circle", element_tag)) {
                                 var element = Circle{};
-                                try element.parse(&self.maker, att_names, att_vals);
+                                try element.parse(&maker, att_names, att_vals);
                                 top_mut.override_from(element);
-                                try self.write_path(self.maker.current_segments(), &stack);
+                                try self.write_path(try maker.segments(), &stack);
                             } else if (std.mem.eql(u8, "ellipse", element_tag)) {
                                 var element = Ellipse{};
-                                try element.parse(&self.maker, att_names, att_vals);
+                                try element.parse(&maker, att_names, att_vals);
                                 top_mut.override_from(element);
-                                try self.write_path(self.maker.current_segments(), &stack);
+                                try self.write_path(try maker.segments(), &stack);
                             } else if (std.mem.eql(u8, "line", element_tag)) {
                                 var element = Line{};
-                                try element.parse(&self.maker, att_names, att_vals);
+                                try element.parse(&maker, att_names, att_vals);
                                 top_mut.override_from(element);
-                                const segs = self.maker.current_segments();
+                                const segs = try maker.segments();
                                 try self.write_path(segs, &stack);
                                 // std.log.warn("line : {any}", .{segs});
                             } else if (std.mem.eql(u8, "polyline", element_tag)) {
                                 var element = PolyLine{};
-                                try element.parse(&self.maker, garbage_alloc, att_names, att_vals);
+                                try element.parse(&maker, garbage_alloc, att_names, att_vals);
                                 top_mut.override_from(element);
-                                try self.write_path(self.maker.current_segments(), &stack);
+                                try self.write_path(try maker.segments(), &stack);
                             } else if (std.mem.eql(u8, "polygon", element_tag)) {
                                 var element = Polygon{};
-                                try element.parse(&self.maker, garbage_alloc, att_names, att_vals);
+                                try element.parse(&maker, garbage_alloc, att_names, att_vals);
                                 top_mut.override_from(element);
-                                try self.write_path(self.maker.current_segments(), &stack);
+                                try self.write_path(try maker.segments(), &stack);
                             } else if (std.mem.eql(u8, "path", element_tag)) {
-                                // if (true)
-                                //     continue;
                                 var element = SvgPath{};
-                                try element.parse(&self.maker, garbage_alloc, att_names, att_vals);
+                                try element.parse(&maker, garbage_alloc, att_names, att_vals);
                                 top_mut.override_from(element);
-                                const segs = self.maker.current_segments();
+                                const segs = try maker.segments();
                                 try self.write_path(segs, &stack);
                                 if (debug) {
+                                    std.log.warn("seg", .{});
                                     std.log.warn("path:", .{});
                                     for (segs) |sg| {
                                         std.log.warn("start: {any}", .{sg.start});
                                         for (sg.commands) |sn| {
-                                            log_node(sn);
+                                            ut.print_node(sn);
                                         }
                                     }
                                 }
@@ -1282,42 +928,6 @@ pub fn SvgConverter(W: type) type {
             }
             try self.builder.writeEndOfFile();
         }
-        fn log_node(n: Node) void {
-            switch (n) {
-                .line => |a| {
-                    const d = a.data;
-                    std.log.warn("node: {s} {any}", .{ @tagName(n), d });
-                },
-                .horiz => |a| {
-                    const d = a.data;
-                    std.log.warn("node: {s} {any}", .{ @tagName(n), d });
-                },
-                .vert => |a| {
-                    const d = a.data;
-                    std.log.warn("node: {s} {any}", .{ @tagName(n), d });
-                },
-                .bezier => |a| {
-                    const d = a.data;
-                    std.log.warn("node: {s} {any}", .{ @tagName(n), d });
-                },
-                .arc_circle => |a| {
-                    const d = a.data;
-                    std.log.warn("node: {s} {any}", .{ @tagName(n), d });
-                },
-                .arc_ellipse => |a| {
-                    const d = a.data;
-                    std.log.warn("node: {s} {any}", .{ @tagName(n), d });
-                },
-                .close => |a| {
-                    const d = a.data;
-                    std.log.warn("node: {s} {any}", .{ @tagName(n), d });
-                },
-                .quadratic_bezier => |a| {
-                    const d = a.data;
-                    std.log.warn("node: {s} {any}", .{ @tagName(n), d });
-                },
-            }
-        }
     };
 }
 
@@ -1327,7 +937,7 @@ pub fn tvg_from_svg(alloc: Allocator, writer: anytype, svg_bytes: []const u8) !v
 }
 
 test "single test icon" {
-    if (true) return;
+    if (debug) return;
     const gpa = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
@@ -1392,7 +1002,10 @@ fn render_icon(
     try tvg.render(alloc, &image_wrapper, w.items);
 }
 
-const debug = true;
+pub const make_node_debug = true and debug;
+pub const make_node_debug2 = false and debug;
+const debug = false;
+
 test "icon map" {
     // if (true) return;
     const gpa = std.testing.allocator;
@@ -1406,7 +1019,7 @@ test "icon map" {
 
     const feathericons = icons.svg.feather;
     const T = feathericons;
-    const icon_idx = 1;
+    const icon_idx = 30;
     const idecls = @typeInfo(T).@"struct".decls;
     const iname = idecls[icon_idx].name;
     const icon_bytes = @field(T, iname);
@@ -1417,39 +1030,15 @@ test "icon map" {
     std.log.warn("{s}", .{iname});
     std.log.warn("{s}", .{icon_bytes});
 }
-
-// output:
-// start: tinyvg.tinyvg.Point{ .x = 1.029e1, .y = 3.86e0 }
-
-//  node: line tinyvg.tinyvg.Point{ .x = 1.82e0, .y = 1.8e1 }
-
-//  node: arc_ellipse tinyvg.tinyvg.Path.Node.ArcEllipse{ .radius_x = 2e0, .radius_y = 2e0, .rotation = 0e0, .large_arc = false, .sweep = false, .target = tinyvg.tinyvg.Point{ .x = 1.71e0, .y = 3e0 } }
-
-//  node: line tinyvg.tinyvg.Point{ .x = 1.8650002e1, .y = 3e0 }
-
-//  node: arc_ellipse tinyvg.tinyvg.Path.Node.ArcEllipse{ .radius_x = 2e0, .radius_y = 2e0, .rotation = 0e0, .large_arc = false, .sweep = false, .target = tinyvg.tinyvg.Point{ .x = 1.71e0, .y = -3e0 } }
-
-//  node: line tinyvg.tinyvg.Point{ .x = 1.371e1, .y = 3.86e0 }
-
-//  node: arc_ellipse tinyvg.tinyvg.Path.Node.ArcEllipse{ .radius_x = 2e0, .radius_y = 2e0, .rotation = 0e0, .large_arc = false, .sweep = false, .target = tinyvg.tinyvg.Point{ .x = -3.42e0, .y = 0e0 } }
-
-// path:
-//      start: tinyvg.tinyvg.Point{ .x = 5e0, .y = 1.7e1 }
-
-//      node: line tinyvg.tinyvg.Point{ .x = 5e0, .y = 1.7e1 }
-
-//      node: arc_ellipse tinyvg.tinyvg.Path.Node.ArcEllipse{ .radius_x = 2e0, .radius_y = 2e0, .rotation = 0e0, .large_arc = false, .sweep = false, .target = tinyvg.tinyvg.Point{ .x = 3e0, .y = 1.5e1 } }
-
-//      node: line tinyvg.tinyvg.Point{ .x = 3e0, .y = 1.5e1 }
-
-//      node: arc_ellipse tinyvg.tinyvg.Path.Node.ArcEllipse{ .radius_x = 2e0, .radius_y = 2e0, .rotation = 0e0, .large_arc = false, .sweep = false, .target = tinyvg.tinyvg.Point{ .x = 5e0, .y = 1.3e1 } }
-
-//      node: line tinyvg.tinyvg.Point{ .x = 2.1e1, .y = 1.3e1 }
-
-//      node: arc_ellipse tinyvg.tinyvg.Path.Node.ArcEllipse{ .radius_x = 2e0, .radius_y = 2e0, .rotation = 0e0, .large_arc = false, .sweep = false, .target = tinyvg.tinyvg.Point{ .x = 2.3e1, .y = 1.5e1 } }
-
-//      node: line tinyvg.tinyvg.Point{ .x = 2.3e1, .y = 2.5e1 }
-
-//      node: arc_ellipse tinyvg.tinyvg.Path.Node.ArcEllipse{ .radius_x = 2e0, .radius_y = 2e0, .rotation = 0e0, .large_arc = false, .sweep = false, .target = tinyvg.tinyvg.Point{ .x = 2.1e1, .y = 2.7e1 } }
-
-//      node: line tinyvg.tinyvg.Point{ .x = 2e1, .y = 2.7e1 }
+// start: tinyvg.tinyvg.Point{ .x = 5e0, .y = 1.8e1 }
+// [default] (warn): node: vert -3.0316488e-13
+// [default] (warn): node: vert -3.0316488e-13
+// [default] (warn): node: vert -3.0316488e-13
+// [default] (warn): node: vert -3.0316488e-13
+// [default] (warn): node: vert -3.0316488e-13
+// [default] (warn): start: tinyvg.tinyvg.Point{ .x = 1.5e1, .y = 6e0 }
+// [default] (warn): node: line tinyvg.tinyvg.Point{ .x = 1.7e1, .y = 6e0 }
+// [default] (warn): node: arc_ellipse tinyvg.tinyvg.Path.Node.ArcEllipse{ .radius_x = 2e0, .radius_y = 2e0, .rotation = 0e0, .large_arc = false, .sweep = false, .target = tinyvg.tinyvg.Point{ .x = 1.9e1, .y = 8e0 } }
+// [default] (warn): node: line tinyvg.tinyvg.Point{ .x = 1.9e1, .y = 1.6e1 }
+// [default] (warn): node: arc_ellipse tinyvg.tinyvg.Path.Node.ArcEllipse{ .radius_x = 2e0, .radius_y = 2e0, .rotation = 0e0, .large_arc = false, .sweep = false, .target = tinyvg.tinyvg.Point{ .x = 1.7e1, .y = 1.8e1 } }
+// [default] (warn): node: line tinyvg.tinyvg.Point{ .x = 1.3809999e1, .y = 1.8e1 }
