@@ -1,53 +1,20 @@
-# zig-svg
+# svg2tvg - convert svg to tvg and render tvg to image
 
-zig-svg provides abstractions for SVG attributes.
+- written in zig 0.14.0
 
-Note that this library only parses specific SVG attributes that need parsing
-outside of general XML, such as paths, colors, or co-ordinate specifications.
+## usage:
 
-For XML parsers, here are a couple:
+## Credit:
 
- * https://github.com/ianprime0509/zig-xml
- * https://github.com/nektro/zig-xml
+- Chris Marchesi: https://github.com/vancluever/zig-svg (used to parse svg attributes)
+- Chris Marchesi: https://github.com/vancluever/z2d (used to render tvg as image)
+- Ian Johnson: https://github.com/ianprime0509/zig-xml (used for parsing xml)
+- https://github.com/TinyVG/sdk/tree/main (used for writing tvg)
 
-## Parsing
+## Licence
 
-All useful primitives will have a parse function that you can call to perform
-the parsing. An example for path is below:
-
-```zig
-const Path = @import("svg").Path;
-var path = try Path.parse(alloc, data);
-defer path.deinit();
-for (path.nodes) |n| {
-  ...
-}
-```
-
-## Errors
-
-Only errors in allocation are reported as errors. All other errors are
-non-fatal and are reported in the `err` attribute instead. This allows for
-partial SVG processing as per the
-[spec](https://www.w3.org/TR/SVG11/implnote.html#ErrorProcessing).
-
-```zig
-const io = @import("std").io;
-const log = @import("std").log;
-const Path = @import("svg").Path;
-var path = try Path.parse(alloc, data);
-defer path.deinit();
-if (path.err) |err| {
-    const errWriter = io.getStdErr();
-    buf.format(errWriter, "error processing SVG: ");
-    try path.fmtErr(errWriter);
-}
-
-for (path.nodes) |n| {
-  ...
-}
-```
-
-## License
-
-This project is licensed MPL 2.0. See LICENSE for a copy of the MPL.
+- this library is under MIT
+- svg.zig from https://github.com/vancluever/zig-svg is MPL licenced
+- z2d is MPL licenced
+- zig-xml is under 0BSD
+- tinyVG/sdk is under MIT
