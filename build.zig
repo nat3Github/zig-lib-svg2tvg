@@ -14,19 +14,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     }).module("xml");
-    const module_icons = b.dependency("icons", .{
-        .target = target,
-        .optimize = optimize,
-    }).module("icons");
-    const module_tvg_sdk = b.dependency("tvg_sdk", .{
-        .target = target,
-        .optimize = optimize,
-    }).module("tvg");
-
-    const module_image = b.dependency("image", .{
-        .target = target,
-        .optimize = optimize,
-    }).module("image");
 
     const module_z2d = b.dependency("z2d", .{
         .target = target,
@@ -34,9 +21,6 @@ pub fn build(b: *std.Build) void {
     }).module("z2d");
 
     this_module.addImport("xml", module_xml);
-    this_module.addImport("icons", module_icons);
-    this_module.addImport("tvg", module_tvg_sdk);
-    this_module.addImport("image", module_image);
     this_module.addImport("z2d", module_z2d);
 
     const tests = b.addRunArtifact(b.addTest(.{
