@@ -1040,7 +1040,7 @@ pub const ImageWrapper2 = struct {
 
 pub const make_node_debug = true and debug;
 pub const make_node_debug2 = false and debug;
-const debug = true;
+const debug = false;
 
 test "icon map" {
     // if (true) return;

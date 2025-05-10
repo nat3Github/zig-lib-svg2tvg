@@ -55,9 +55,11 @@ pub fn renderStream(
 
     const scaling_x = new_widthf32 / og_widthf32;
     const scaling_y = new_heightf32 / og_heightf32;
+    const gpa = alloc;
 
-    var sfc = try z2d.Surface.init(.image_surface_rgba, allocator, @intCast(new_width), @intCast(new_height));
-    defer sfc.deinit(allocator);
+    var sfc = try z2d.Surface.initPixel(.{ .rgba = .fromClamped(1, 0, 1, 1) }, gpa, @intCast(new_width), @intCast(new_height));
+    // defer sfc.deinit(allocator);
+
     var ctx = z2d.Context.init(alloc, &sfc);
     defer ctx.deinit();
     const lwdef = 1;
@@ -86,7 +88,7 @@ pub fn renderStream(
                 try mtx.ctx.stroke();
             }
         }
-        _ = arena.reset(.retain_capacity);
+        // _ = arena.reset(.retain_capacity);
     }
     for (0..new_height) |y| {
         for (0..new_width) |x| {
@@ -126,6 +128,11 @@ const ShimPainter = struct {
             .y = (@as(f64, @floatCast(self.scaley)) * p.y),
         };
     }
+    fn setlw(self: *ShimPainter, lw: ?f32) void {
+        const sc = (self.scalex + self.scaley) / 2;
+        const f = lw orelse self.lwdef;
+        self.ctx.setLineWidth(@floatCast(sc * f));
+    }
     fn close(self: *ShimPainter) !void {
         const ctx = self.ctx;
         try ctx.closePath();
@@ -134,16 +141,18 @@ const ShimPainter = struct {
         const ctx = self.ctx;
         const pt = self.tranform(p);
         try ctx.moveTo(pt.x, pt.y);
+        self.ctx.setLineCapMode(.round);
+        self.ctx.setLineJoinMode(.round);
     }
     fn lineTo(self: *ShimPainter, p: Vec2, lw: ?f32) !void {
         const ctx = self.ctx;
         const pt = self.tranform(p);
-        ctx.setLineWidth(@floatCast(lw orelse self.lwdef));
+        self.setlw(lw);
         try ctx.lineTo(pt.x, pt.y);
     }
     fn bezier(self: *ShimPainter, c0: Vec2, c1: Vec2, end: Vec2, lw: ?f32) !void {
         const ctx = self.ctx;
-        ctx.setLineWidth(@floatCast(lw orelse self.lwdef));
+        self.setlw(lw);
         const c0t = self.tranform(c0);
         const c1t = self.tranform(c1);
         const endt = self.tranform(end);
@@ -185,7 +194,7 @@ fn z2d_draw_seg(alloc: Allocator, ctx: *ShimPainter, seg: Segment) !void {
                     @floatCast(arc.radius),
                     0,
                     arc.large_arc,
-                    arc.sweep,
+                    !arc.sweep,
                 );
                 for (cv) |av| {
                     try ctx.bezier(av[1], av[2], av[3], a.line_width);
@@ -203,7 +212,7 @@ fn z2d_draw_seg(alloc: Allocator, ctx: *ShimPainter, seg: Segment) !void {
                     @floatCast(arc.radius_y),
                     @floatCast(arc.rotation),
                     arc.large_arc,
-                    arc.sweep,
+                    !arc.sweep,
                 );
                 for (cv) |av| {
                     try ctx.bezier(av[1], av[2], av[3], a.line_width);
