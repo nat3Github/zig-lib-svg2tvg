@@ -3,6 +3,13 @@
 - written in zig 0.14.0
 - dependency name: svg2tvg, module name: svg2tvg
 
+## status / background
+- this lib is fresh and not battletested
+- the main goal is to convert and render icons
+- the renderer has options to overwrite color and stroke width
+- only a small subset of svg is supported
+- related project: https://github.com/nat3Github/zig-lib-icons/tree/main
+
 ## usage:
 
 ```zig
