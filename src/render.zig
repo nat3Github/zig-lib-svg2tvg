@@ -31,12 +31,22 @@ const Shim = struct {
     width: isize,
     height: isize,
 };
+pub const Options = struct {
+    overwrite_stroke_width: ?f32 = null, // overwrite stroke_width
+    overwrite_fill: ?Color = null, // overwrite all colors used to color
+    overwrite_stroke: ?Color = null, // overwrite stroke colors
+    use_z2d_for_stroke: bool = true, // either use z2d as painter or the custom painter (Shimpainter2 -> stroke.zig) NOTE: z2d has a bug with closing paths on the same point https://github.com/vancluever/z2d/issues/116 it seems to be working with a workaround i found (search for workaround)
+    // NOTE: z2d arguably has better quality but im not sure that it is correct
+    disable_fill: bool = false,
+};
+
 pub fn renderStream(
     allocator: std.mem.Allocator,
     /// A struct that exports a single function `setPixel(x: isize, y: isize, color: [4]u8) void` as well as two fields width and height
     img_shim: anytype,
     /// The icon data
     reader: anytype,
+    opts: Options,
 ) !void {
     var parser = try parse(allocator, reader);
     defer parser.deinit();
@@ -63,17 +73,18 @@ pub fn renderStream(
 
     var ctx = z2d.Context.init(alloc, &sfc);
     defer ctx.deinit();
-    const lwdef = 2;
+    const lwdef = 1.5;
 
     var prop = ShimProp{
-        .lwdef = lwdef,
+        .lwdef = opts.overwrite_stroke_width orelse lwdef,
         .col = .{ 255, 255, 255, 255 },
         .scalex = scaling_x,
         .scaley = scaling_y,
     };
-    var mtx = ShimPainter{ .ctx = &ctx, .prop = &prop };
+    var shim_fill = ShimPainter{ .ctx = &ctx, .prop = &prop };
 
-    var mtx2 = ShimPainter2.init(&ctx, &prop);
+    var shim_stroke = ShimPainter2.init(&ctx, &prop);
+    _ = &shim_stroke;
 
     while (try parser.next()) |cmd| {
         const props = try get_props(color_table, cmd);
@@ -81,24 +92,30 @@ pub fn renderStream(
 
         for (segs) |seg| {
             if (props.fill) |fill| {
-                // ut.print_point("start", seg.start);
-                // for (seg.commands) |n| {
-                //     ut.print_node(n);
-                // }
-                mtx.setColor(fill);
-                try mtx.moveTo(.from(seg.start));
-                try z2d_draw_seg(alloc, &mtx, seg);
-                try mtx.ctx.fill();
+                if (!opts.disable_fill) {
+                    prop.setColor(opts.overwrite_fill orelse fill);
+                    try shim_fill.moveTo(.from(seg.start));
+                    try z2d_draw_seg(alloc, &shim_fill, seg);
+                    try shim_fill.ctx.fill();
+                }
             }
             if (props.stroke) |stroke| {
-                // ut.print_point("start", seg.start);
-                // for (seg.commands) |n| {
-                //     ut.print_node(n);
-                // }
-                mtx.setColor(stroke);
-                try mtx.moveTo(.from(seg.start));
-                try z2d_draw_seg(alloc, &mtx2, seg);
-                try mtx.ctx.stroke();
+                if (opts.use_z2d_for_stroke) {
+                    prop.setColor(opts.overwrite_fill orelse stroke);
+                    try shim_fill.moveTo(.from(seg.start));
+                    try z2d_draw_seg(alloc, &shim_fill, seg);
+                    try shim_fill.ctx.stroke();
+                } else {
+                    // std.log.warn("LOG SEG RENDER PATH", .{});
+                    // ut.print_point("start", seg.start);
+                    // for (seg.commands) |n| {
+                    //     ut.print_node(n);
+                    // }
+                    // std.log.warn("LOG RENDER END", .{});
+                    prop.setColor(opts.overwrite_stroke orelse stroke);
+                    try shim_stroke.moveTo(.from(seg.start));
+                    try z2d_draw_seg(alloc, &shim_stroke, seg);
+                }
             }
         }
         // _ = arena.reset(.retain_capacity);
@@ -121,15 +138,15 @@ const ShimProp = struct {
     scalex: f32,
     scaley: f32,
     col: [4]u8,
-    fn setColor(self: *const ShimPainter, col: Color) void {
-        self.ctx.setSourceToPixel(.{ .rgba = z2d.pixel.RGBA.fromClamped(
-            @floatCast(col.r),
-            @floatCast(col.g),
-            @floatCast(col.b),
-            @floatCast(col.a),
-        ) });
+    fn setColor(self: *ShimProp, col: Color) void {
+        self.col = .{
+            denorm(col.r),
+            denorm(col.g),
+            denorm(col.b),
+            denorm(col.a),
+        };
     }
-    fn tranform(self: *const ShimPainter, p: Vec2) Vec2 {
+    fn tranform(self: *ShimProp, p: Vec2) Vec2 {
         return Vec2{
             .x = (@as(f64, @floatCast(self.scalex)) * p.x),
             .y = (@as(f64, @floatCast(self.scaley)) * p.y),
@@ -141,6 +158,14 @@ const ShimProp = struct {
         return sc * f;
     }
 };
+fn denorm(x: f32) u8 {
+    const f: f32 = math.clamp(x * 255, 0, 255);
+    return @intFromFloat(f);
+}
+fn norm(x: u8) f64 {
+    const f: f64 = @floatFromInt(x);
+    return f / 255.0;
+}
 pub const ShimPainter2 = struct {
     ctx: *z2d.Context,
     prop: *ShimProp,
@@ -149,7 +174,7 @@ pub const ShimPainter2 = struct {
     width: u32 = 0,
     height: u32 = 0,
     fn init(ctx: *z2d.Context, prop: *ShimProp) ShimPainter2 {
-        return ShimPainter{
+        return @This(){
             .ctx = ctx,
             .prop = prop,
             .start = Vec2{},
@@ -158,95 +183,82 @@ pub const ShimPainter2 = struct {
             .height = @intCast(ctx.surface.getWidth()),
         };
     }
-    fn norm(x: u8) f64 {
-        const f: f64 = @floatFromInt(x);
-        return f / 255.0;
-    }
-
     pub fn putPixel(self: *@This(), x: u32, y: u32, col: [4]u8) void {
         const pix = z2d.pixel.RGBA.fromClamped(norm(col[0]), norm(col[1]), norm(col[2]), norm(col[3]));
-        self.ctx.surface.putPixel(@intCast(x), @intCast(y), pix);
+        self.ctx.surface.putPixel(@intCast(x), @intCast(y), .{ .rgba = pix });
     }
     pub fn getPixel(self: *@This(), x: u32, y: u32) [4]u8 {
         const pix = self.ctx.surface.getPixel(@intCast(x), @intCast(y)).?.rgba;
         return .{ pix.r, pix.g, pix.b, pix.a };
     }
 
-    fn close(self: *ShimPainter) !void {
+    fn close(self: *@This()) !void {
         ldrw.strokeLineSegmentAA(
             self,
-            self.curr.data(),
-            self.start.data(),
+            self.prop.tranform(self.curr).data(),
+            self.prop.tranform(self.start).data(),
             self.prop.getlw(null),
             self.prop.col,
         );
     }
-    fn moveTo(self: *ShimPainter, p: Vec2) !void {
-        const pt = self.prop.tranform(p);
-        self.curr = pt;
-        self.start = pt;
+    fn moveTo(self: *@This(), p: Vec2) !void {
+        self.curr = p;
+        self.start = p;
     }
-    fn lineTo(self: *ShimPainter, p: Vec2, lw: ?f32) !void {
-        const pt = self.prop.tranform(p);
+    fn lineTo(self: *@This(), p: Vec2, lw: ?f32) !void {
         ldrw.strokeLineSegmentAA(
             self,
-            self.curr.data(),
-            pt.data(),
+            self.prop.tranform(self.curr).data(),
+            self.prop.tranform(p).data(),
             self.prop.getlw(lw),
             self.prop.col,
         );
-        self.curr = pt;
+        self.curr = p;
     }
-    fn bezier(self: *ShimPainter, c0: Vec2, c1: Vec2, end: Vec2, lw: ?f32) !void {
-        const c0t = self.prop.tranform(c0);
-        const c1t = self.prop.tranform(c1);
-        const endt = self.prop.tranform(end);
+    fn bezier(self: *@This(), c0: Vec2, c1: Vec2, end: Vec2, lw: ?f32) !void {
         ldrw.strokeBezierAA(
             self,
-            self.curr.data(),
-            c0t.data(),
-            c1t.data(),
-            endt.data(),
+            self.prop.tranform(self.curr).data(),
+            self.prop.tranform(c0).data(),
+            self.prop.tranform(c1).data(),
+            self.prop.tranform(end).data(),
             self.prop.getlw(lw),
             self.prop.col,
         );
-        self.curr = endt;
+        self.curr = end;
+    }
+    fn logline(str: []const u8, a: Vec2, b: Vec2) void {
+        std.debug.print("{s} {d:.0} {d:.0} to {d:.0} {d:.0}\n", .{ str, a.x, a.y, b.x, b.y });
     }
 };
 
 pub const ShimPainter = struct {
     ctx: *z2d.Context,
     prop: *ShimProp,
-    fn close(self: *ShimPainter) !void {
-        // std.log.warn("close", .{});
+    fn close(self: *@This()) !void {
         const ctx = self.ctx;
         try ctx.closePath();
     }
-    fn moveTo(self: *ShimPainter, p: Vec2) !void {
-        // std.log.warn("moveTo {}, {}", .{ p.x, p.y });
+    fn moveTo(self: *@This(), p: Vec2) !void {
         const ctx = self.ctx;
         const pt = self.prop.tranform(p);
         try ctx.moveTo(pt.x, pt.y);
         self.ctx.setLineCapMode(.round);
         self.ctx.setLineJoinMode(.round);
     }
-    fn lineTo(self: *ShimPainter, p: Vec2, lw: ?f32) !void {
-        // std.log.warn("lineTo {}, {}", .{ p.x, p.y });
+    fn lineTo(self: *@This(), p: Vec2, lw: ?f32) !void {
         const ctx = self.ctx;
-        const pt = self.prop.tranform(p);
-        // workaround for z2d bug
-        pt.x -= 0.01;
+        var pt = self.prop.tranform(p);
+        pt.x -= 0.01; // NOTE: workaround for z2d bug
         self.ctx.setLineWidth(self.prop.getlw(lw));
         try ctx.lineTo(pt.x, pt.y);
     }
-    fn bezier(self: *ShimPainter, c0: Vec2, c1: Vec2, end: Vec2, lw: ?f32) !void {
-        // std.log.warn("bezier", .{});
-        const ctx = self.ctx;
+    fn bezier(self: *@This(), c0: Vec2, c1: Vec2, end: Vec2, lw: ?f32) !void {
         self.ctx.setLineWidth(self.prop.getlw(lw));
         const c0t = self.prop.tranform(c0);
         const c1t = self.prop.tranform(c1);
         const endt = self.prop.tranform(end);
-        try ctx.curveTo(
+        try self.ctx.curveTo(
             c0t.x,
             c0t.y,
             c1t.x,
@@ -442,8 +454,11 @@ pub fn get_color(table: []const Color, k: Style) !Color {
 pub const Vec2 = struct {
     x: f64 = 0,
     y: f64 = 0,
-    fn data(self: Vec2) [2]f64 {
-        return .{ self.x, self.y };
+    fn data(self: Vec2) [2]f32 {
+        return .{
+            @floatCast(self.x),
+            @floatCast(self.y),
+        };
     }
     fn lerp(a: Vec2, b: Vec2, t: f64) Vec2 {
         return Vec2{

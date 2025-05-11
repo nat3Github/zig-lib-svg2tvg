@@ -22,7 +22,7 @@ const tinyvg2 = @import("tinyvg/tinyvg.zig");
 pub const tvg = tinyvg2;
 pub const renderStream = @import("render.zig").renderStream;
 
-const Color = tvg.Color;
+pub const Color = tvg.Color;
 const Path = tvg.Path;
 const Segment = Path.Segment;
 const Node = Path.Node;
@@ -100,6 +100,10 @@ const ViewBox = struct {
         height: f32,
         point: Point,
     ) Point {
+        assert(width != 0);
+        assert(height != 0);
+        assert(self.w.? != 0);
+        assert(self.h.? != 0);
         return Point{
             .x = (point.x - self.x) * (width / self.w.?),
             .y = (point.y - self.y) * (height / self.h.?),
@@ -238,10 +242,9 @@ pub const Svg = struct {
             .x = @floatCast(pp.x),
             .y = @floatCast(pp.y),
         };
-
         const ret = self.viewBox.transform(self.width.?, self.height.?, p);
-        assert(math.isNormal(p.x));
-        assert(math.isNormal(p.y));
+        assert(math.isNormal(ret.x) or ret.x == 0);
+        assert(math.isNormal(ret.y) or ret.y == 0);
         return ret;
     }
     pub fn point_from(self: *const @This(), coord: svg_parsing.CoordinatePair) Point {
@@ -543,7 +546,7 @@ const SvgPath = struct {
     stroke: ?SvgColor = null,
     @"stroke-width": ?f32 = null,
     @"stroke-opacity": ?f32 = null, // between 0 and 1
-    pub fn parse(
+    pub fn parse_dep(
         self: *@This(),
         maker: *NodeMaker,
         alloc: Allocator,
@@ -638,6 +641,152 @@ const SvgPath = struct {
             }
         }
     }
+    fn t2p(x: f32, y: f32) Point {
+        return Point{ .x = x, .y = y };
+    }
+    pub fn parse(
+        self: *@This(),
+        maker: *NodeMaker,
+        alloc: Allocator,
+        att: []const []const u8,
+        val: []const []const u8,
+    ) !void {
+        const Def = struct {
+            pub const fill: ?SvgColor = undefined;
+            pub const @"fill-opacity": ?f32 = undefined;
+            pub const stroke: ?SvgColor = undefined;
+            pub const @"stroke-width": ?f32 = undefined;
+            pub const @"stroke-opacity": ?f32 = undefined;
+        };
+        for (att, val) |a, vx| {
+            try utils.auto_parse_def(@This(), self, Def, a, vx);
+        }
+        for (att, val) |a, vx| {
+            if (std.mem.eql(u8, a, "d")) {
+                const nodes = try @import("svg2.zig").parse_path_data(alloc, vx);
+
+                for (nodes) |cmd| {
+                    switch (cmd.node_type) {
+                        .move_to, .line_to => {
+                            // [x, y]
+                            if (cmd.values.len % 2 != 0) return error.InvalidValueCount;
+                            for (cmd.values, 0..) |_, i| {
+                                std.log.warn("M/L", .{});
+                                if (i % 2 == 0) {
+                                    const x = cmd.values[i];
+                                    const y = cmd.values[i + 1];
+                                    if (i == 0 and cmd.node_type == .move_to) {
+                                        try maker.move(t2p(x, y), cmd.rel);
+                                    } else {
+                                        try maker.line(t2p(x, y), cmd.rel);
+                                    }
+                                }
+                            }
+                        },
+                        .horizontal_line_to, .vertical_line_to => {
+                            // [x] or [y]
+                            for (cmd.values) |v| {
+                                std.log.warn("H/V", .{});
+                                if (cmd.node_type == .horizontal_line_to) {
+                                    try maker.horiz(v, cmd.rel);
+                                } else try maker.vert(v, cmd.rel);
+                            }
+                        },
+                        .curve_to => {
+                            // [x1 y1 x2 y2 x y] (multiple sets allowed)
+                            if (cmd.values.len % 6 != 0) return error.InvalidValueCount;
+                            var i: usize = 0;
+                            while (i + 5 < cmd.values.len) : (i += 6) {
+                                std.log.warn("C", .{});
+                                const x1 = cmd.values[i];
+                                const y1 = cmd.values[i + 1];
+                                const x2 = cmd.values[i + 2];
+                                const y2 = cmd.values[i + 3];
+                                const x = cmd.values[i + 4];
+                                const y = cmd.values[i + 5];
+                                try maker.curve_to(
+                                    t2p(x1, y1),
+                                    t2p(x2, y2),
+                                    t2p(x, y),
+                                    cmd.rel,
+                                );
+                            }
+                        },
+                        .smooth_curve_to => {
+                            // [x2 y2 x y]
+                            if (cmd.values.len % 4 != 0) return error.InvalidValueCount;
+                            var i: usize = 0;
+                            while (i + 3 < cmd.values.len) : (i += 4) {
+                                std.log.warn("S", .{});
+                                const x2 = cmd.values[i];
+                                const y2 = cmd.values[i + 1];
+                                const x = cmd.values[i + 2];
+                                const y = cmd.values[i + 3];
+                                try maker.smooth_curve_to(
+                                    t2p(x2, y2),
+                                    t2p(x, y),
+                                    cmd.rel,
+                                );
+                            }
+                        },
+                        .quadratic_bezier_curve_to => {
+                            // [x1 y1 x y]
+                            if (cmd.values.len % 4 != 0) return error.InvalidValueCount;
+                            var i: usize = 0;
+                            while (i + 3 < cmd.values.len) : (i += 4) {
+                                std.log.warn("Q", .{});
+                                const x1 = cmd.values[i];
+                                const y1 = cmd.values[i + 1];
+                                const x = cmd.values[i + 2];
+                                const y = cmd.values[i + 3];
+                                try maker.quadratic_bezier_curve_to(
+                                    t2p(x1, y1),
+                                    t2p(x, y),
+                                    cmd.rel,
+                                );
+                            }
+                        },
+                        .smooth_quadratic_bezier_curve_to => {
+                            // [x y]
+                            if (cmd.values.len % 2 != 0) return error.InvalidValueCount;
+                            for (cmd.values, 0..) |_, i| {
+                                if (i % 2 == 0) {
+                                    std.log.warn("T", .{});
+                                    const x = cmd.values[i];
+                                    const y = cmd.values[i + 1];
+                                    try maker.smooth_quadratic_bezier_curve_to(
+                                        t2p(x, y),
+                                        cmd.rel,
+                                    );
+                                }
+                            }
+                        },
+                        .elliptical_arc => {
+                            // [rx ry x-axis-rotation large-arc-flag sweep-flag x y]
+                            if (cmd.values.len % 7 != 0) return error.InvalidValueCount;
+                            var i: usize = 0;
+                            while (i + 6 < cmd.values.len) : (i += 7) {
+                                std.log.warn("A", .{});
+                                const rx = cmd.values[i];
+                                const ry = cmd.values[i + 1];
+                                const rotation = cmd.values[i + 2];
+                                const large_arc = cmd.values[i + 3] != 0;
+                                const sweep = cmd.values[i + 4] != 0;
+                                const x = cmd.values[i + 5];
+                                const y = cmd.values[i + 6];
+                                try maker.elliptical_arc(rx, ry, rotation, large_arc, sweep, t2p(x, y), cmd.rel);
+                            }
+                        },
+                        .close_path => {
+                            std.debug.print("close_path\n", .{});
+                            try maker.close();
+                        },
+                    }
+                }
+            }
+        }
+        try maker.flush();
+    }
 };
 const G = struct {
     fill: ?SvgColor = null,
@@ -706,6 +855,20 @@ pub fn SvgConverter(W: type) type {
                 try self.builder.writeFillPath(.{ .flat = col_idx }, pathlist);
             }
             if (stroke) |col| {
+                for (@constCast(pathlist)) |*seg| {
+                    for (@constCast(seg.commands)) |*n| {
+                        switch (n.*) {
+                            .line => |_| n.line.line_width = stroke_width,
+                            .horiz => |_| n.horiz.line_width = stroke_width,
+                            .vert => |_| n.vert.line_width = stroke_width,
+                            .bezier => |_| n.bezier.line_width = stroke_width,
+                            .arc_circle => |_| n.arc_circle.line_width = stroke_width,
+                            .arc_ellipse => |_| n.arc_ellipse.line_width = stroke_width,
+                            .close => |_| n.close.line_width = stroke_width,
+                            .quadratic_bezier => |_| n.quadratic_bezier.line_width = stroke_width,
+                        }
+                    }
+                }
                 const col_idx = self.colormap.get(.fromColor(col)).?;
                 try self.builder.writeDrawPath(.{ .flat = col_idx }, stroke_width, pathlist);
             }

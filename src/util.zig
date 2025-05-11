@@ -179,64 +179,63 @@ pub const NodeMaker = struct {
         };
         self.cmds_len = len;
         try self.iseg.append(iseg);
-        self.m.reset();
     }
     pub fn close(self: *NodeMaker) !void {
-        if (make_node_debug) std.log.warn("close", .{});
         const nd = self.m.close(self.lw);
         try self.cmds.append(nd);
         try self.flush();
+        if (make_node_debug) std.log.warn("nodmaker close", .{});
     }
     pub fn move(self: *NodeMaker, p: Point, rel: bool) !void {
-        if (make_node_debug) std.log.warn("move {d:.2} {d:.2}", .{ p.x, p.y });
         try self.flush();
         self.flushed = false;
         self.m.move(p, rel);
+        if (make_node_debug) std.log.warn("nodemaker move {d:.2} {d:.2}", .{ p.x, p.y });
     }
     pub fn line(self: *NodeMaker, p: Point, rel: bool) !void {
-        if (make_node_debug) std.log.warn("line", .{});
         const nd = self.m.line(self.lw, p, rel);
         try self.cmds.append(nd);
+        if (make_node_debug) std.log.warn("nodemaker line", .{});
     }
     pub fn vert(self: *NodeMaker, f: f32, rel: bool) !void {
-        if (make_node_debug) std.log.warn("ver", .{});
         const nd = self.m.vert(self.lw, f, rel);
         try self.cmds.append(nd);
+        if (make_node_debug) std.log.warn("nodemaker vert", .{});
     }
     pub fn horiz(self: *NodeMaker, f: f32, rel: bool) !void {
-        if (make_node_debug) std.log.warn("horiz", .{});
         const nd = self.m.horiz(self.lw, f, rel);
         try self.cmds.append(nd);
+        if (make_node_debug) std.log.warn("nodemaker horiz", .{});
     }
     pub fn quadratic_bezier_curve_to(self: *NodeMaker, c: Point, p: Point, rel: bool) !void {
-        if (make_node_debug) std.log.warn("qbez", .{});
         const nd = self.m.quadratic_bezier_curve_to(self.lw, c, p, rel);
         try self.cmds.append(nd);
+        if (make_node_debug) std.log.warn("notemaker qbez", .{});
     }
     pub fn curve_to(self: *NodeMaker, c1: Point, c2: Point, p: Point, rel: bool) !void {
-        if (make_node_debug) std.log.warn("curve to", .{});
         const nd = self.m.curve_to(self.lw, c1, c2, p, rel);
         try self.cmds.append(nd);
+        if (make_node_debug) std.log.warn("nodemaker curve to", .{});
     }
     pub fn smooth_quadratic_bezier_curve_to(self: *NodeMaker, p: Point, rel: bool) !void {
-        if (make_node_debug) std.log.warn("smooth quad", .{});
         const nd = try self.m.smooth_quadratic_bezier_curve_to(self.lw, p, rel);
         try self.cmds.append(nd);
+        if (make_node_debug) std.log.warn("nodemakersmooth quad", .{});
     }
     pub fn smooth_curve_to(self: *NodeMaker, c2: Point, p: Point, rel: bool) !void {
-        if (make_node_debug) std.log.warn("smoot curve to", .{});
         const nd = try self.m.smooth_curve_to(self.lw, c2, p, rel);
         try self.cmds.append(nd);
+        if (make_node_debug) std.log.warn("nodemakersmoot curve to", .{});
     }
     pub fn elliptical_arc(self: *NodeMaker, rx: f32, ry: f32, rotation: f32, large_arc: bool, sweep_cw: bool, p: Point, rel: bool) !void {
-        if (make_node_debug) std.log.warn("elliptical arc", .{});
         const nd = self.m.elliptical_arc(self.lw, rx, ry, rotation, large_arc, sweep_cw, p, rel);
         try self.cmds.append(nd);
+        if (make_node_debug) std.log.warn("nodemakerelliptical arc", .{});
     }
     pub fn circular_arc(self: *NodeMaker, r: f32, large_arc: bool, sweep_cw: bool, p: Point, rel: bool) !void {
-        if (make_node_debug) std.log.warn("cirx arc", .{});
         const nd = self.m.circular_arc(self.lw, r, large_arc, sweep_cw, p, rel);
         try self.cmds.append(nd);
+        if (make_node_debug) std.log.warn("nodemakercirx arc", .{});
     }
     pub fn segments(self: *@This()) !?[]const Segment {
         for (0..self.iseg.items.len) |_| {
@@ -269,9 +268,6 @@ pub const make_node = struct {
             .y = 2 * current_pos.y - prev_control.y,
         };
     }
-    // print_point("current", current);
-    // print_point("last control", self.last_control.?);
-    // print_point("reflected", reflected);
     fn reset_last_control(self: *make_node) void {
         self.last_control = null;
     }
