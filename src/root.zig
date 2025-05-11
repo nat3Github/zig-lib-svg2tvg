@@ -838,12 +838,10 @@ pub fn write_path(
     const stroke = try InheritableProperties.resolve_color_property(stack, "stroke");
 
     if (fill) |col| {
-        log_seg(pathlist);
         const col_idx = try self.get_col(col);
         try builder.writeFillPath(.{ .flat = col_idx }, pathlist);
     }
     if (stroke) |col| {
-        log_seg(pathlist);
         for (pathlist) |*seg| {
             const node_dup = try arena_alloc.alloc(Node, seg.commands.len);
             for (seg.commands, node_dup) |n, *nd| {

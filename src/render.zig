@@ -32,8 +32,8 @@ const Shim = struct {
     height: isize,
 };
 pub const Options = struct {
-    fallback_stroke_width: ?f32 = 0.5, // overwrite stroke_width
-    overwrite_stroke_width: ?f32 = null, // fallback stroke_width
+    fallback_stroke_width: ?f32 = 1.5, // fallback stroke_width
+    overwrite_stroke_width: ?f32 = null, // overwrite stroke_width
     overwrite_fill: ?Color = null, // overwrite all colors used to color
     overwrite_stroke: ?Color = null, // overwrite stroke colors
     use_z2d_for_stroke: bool = true, // either use z2d as painter or the custom painter (Shimpainter2 -> stroke.zig) NOTE: z2d has a bug with closing paths on the same point https://github.com/vancluever/z2d/issues/116 it seems to be working with a workaround i found (search for workaround)
@@ -73,9 +73,10 @@ pub fn renderStream(
     var ctx = z2d.Context.init(gpa, &sfc);
     defer ctx.deinit();
 
-    const lwdef: f32 = opts.fallback_stroke_width orelse 1.5;
+    const lwdef: f32 = opts.fallback_stroke_width orelse 1;
     var prop = ShimProp{
-        .lwdef = opts.overwrite_stroke_width orelse lwdef,
+        .lwdef = lwdef,
+        .overwrite_lw = opts.overwrite_stroke_width,
         .col = .{ 255, 255, 255, 255 },
         .scalex = scaling_x,
         .scaley = scaling_y,
@@ -143,6 +144,7 @@ fn debug_print_seg(seg: Segment) void {
     std.log.warn("LOG RENDER END", .{});
 }
 const ShimProp = struct {
+    overwrite_lw: ?f32,
     lwdef: f32,
     scalex: f32,
     scaley: f32,
@@ -163,6 +165,7 @@ const ShimProp = struct {
     }
     fn getlw(self: *ShimProp, lw: ?f32) f32 {
         const sc = (self.scalex + self.scaley) / 2;
+        if (self.overwrite_lw) |ovw| return sc * ovw;
         const f = lw orelse self.lwdef;
         return sc * f;
     }
@@ -182,6 +185,7 @@ pub const ShimPainter2 = struct {
     curr: Vec2,
     width: u32 = 0,
     height: u32 = 0,
+    curr_lw: f32 = 0,
     fn init(ctx: *z2d.Context, prop: *ShimProp) ShimPainter2 {
         return @This(){
             .ctx = ctx,
@@ -206,32 +210,37 @@ pub const ShimPainter2 = struct {
             self,
             self.prop.tranform(self.curr).data(),
             self.prop.tranform(self.start).data(),
-            self.prop.getlw(null),
+            self.curr_lw,
             self.prop.col,
         );
     }
     fn moveTo(self: *@This(), p: Vec2) !void {
         self.curr = p;
+        self.curr_lw = 0;
         self.start = p;
     }
     fn lineTo(self: *@This(), p: Vec2, lw: ?f32) !void {
+        const tlw = self.prop.getlw(lw);
+        self.curr_lw = tlw;
         ldrw.strokeLineSegmentAA(
             self,
             self.prop.tranform(self.curr).data(),
             self.prop.tranform(p).data(),
-            self.prop.getlw(lw),
+            tlw,
             self.prop.col,
         );
         self.curr = p;
     }
     fn bezier(self: *@This(), c0: Vec2, c1: Vec2, end: Vec2, lw: ?f32) !void {
+        const tlw = self.prop.getlw(lw);
+        self.curr_lw = tlw;
         ldrw.strokeBezierAA(
             self,
             self.prop.tranform(self.curr).data(),
             self.prop.tranform(c0).data(),
             self.prop.tranform(c1).data(),
             self.prop.tranform(end).data(),
-            self.prop.getlw(lw),
+            tlw,
             self.prop.col,
         );
         self.curr = end;
