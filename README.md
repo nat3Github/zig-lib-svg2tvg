@@ -48,7 +48,7 @@ test "convert to tvg and render" {
 
 - Chris Marchesi: https://github.com/vancluever/z2d (used to render tvg as image)
 - Ian Johnson: https://github.com/ianprime0509/zig-xml (used for parsing xml)
-- Chris Marchesi: https://github.com/vancluever/zig-svg (as inspiration but currently not in use due to special cases not beeing handled)
+- Chris Marchesi: https://github.com/vancluever/zig-svg (as inspiration for svg attribute parsing but currently not in use due to special cases not beeing handled)
 - https://github.com/TinyVG/sdk/tree/main (used for writing tvg)
 
 ## Licence
