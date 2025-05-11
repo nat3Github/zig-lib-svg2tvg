@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: MPL-2.0
-//   Copyright © 2024 Chris Marchesi
 .{
     .name = .svg2tvg,
     .fingerprint = 0x15ec8a64b919931e,
