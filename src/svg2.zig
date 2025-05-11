@@ -85,7 +85,7 @@ pub fn parse_path_data(allocator: std.mem.Allocator, d: []const u8) ![]Command {
         } else if (current_cmd == null) {
             return error.InvalidPathData;
         } else {
-            std.log.warn("{s}", .{token});
+            // std.log.warn("{s}", .{token});
             const val = try std.fmt.parseFloat(f32, token);
             std.debug.assert(std.math.isNormal(val) or val == 0);
             try values.append(val);
