@@ -745,7 +745,7 @@ fn renderCircle(
     start_width: f32,
     end_width: f32,
 ) !void {
-    if (!(p1.x != p0.x and p1.y != p0.y)) return error.PointsAreEqual;
+    if (!(p1.x != p0.x and p1.y != p0.y)) return; // points are equal
     assert(p1.x != p0.x and p1.y != p0.y);
     assert(radius != 0);
     var r = radius;
