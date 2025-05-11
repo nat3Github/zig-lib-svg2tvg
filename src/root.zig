@@ -55,7 +55,6 @@ pub const SvgColor = union(SvgColorTag) {
 
     pub fn parseColor(val: []const u8) SvgColor {
         const trimmed = std.mem.trim(u8, val, " ");
-
         if (std.mem.eql(u8, trimmed, "none")) {
             return none;
         }
@@ -157,11 +156,11 @@ const InheritableProperties = struct {
             }
         }
     }
-    pub fn resolve_color_property(stack: *const Stack(InheritableProperties), comptime name: []const u8) ?Color {
-        var i = stack.data.len;
+    pub fn resolve_color_property(stack: *const Stack(InheritableProperties), comptime name: []const u8) !?Color {
+        var i = stack.top_index().? + 1;
         while (i > 0) {
             i -= 1;
-            const top: InheritableProperties = stack.data[i];
+            const top: InheritableProperties = try stack.get(i);
             const mcol: ?SvgColor = @field(top, name);
             if (mcol == null) return null;
             if (mcol.? == .col) return mcol.?.col;
@@ -172,7 +171,7 @@ const InheritableProperties = struct {
                 .currentColor => continue,
             }
         }
-        unreachable;
+        @panic("bottom of stack should have color");
     }
 };
 
@@ -806,309 +805,293 @@ const G = struct {
         }
     }
 };
-pub fn SvgConverter(W: type) type {
-    return struct {
-        const Converter = @This();
-        const Builder = tvg.builder.Builder(W);
-        arena: std.heap.ArenaAllocator,
-        colortable_len: usize = 0,
-        colormap: ColMap,
-        svg: Svg = Svg{},
-        builder: Builder,
 
-        default_stroke_width: f32 = 2,
-        default_color: SvgColor =
-            .{
-                .col = Color{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
-            },
+svg: Svg = Svg{},
+xml_max_nesting: usize = 128,
+default_stroke_width: f32 = 2,
+default_color: SvgColor = .{ .col = Color{
+    .r = 0.0,
+    .g = 0.0,
+    .b = 0.0,
+    .a = 1.0,
+} },
+color_table: []const Color = &.{},
+pub fn get_col(
+    self: *const @This(),
+    color: Color,
+) !u32 {
+    for (self.color_table, 0..) |c, i| {
+        if (std.meta.eql(c, color)) return math.cast(u32, i) orelse return error.ColorOOB;
+    }
+    return error.ColorNotFound;
+}
 
-        pub fn init(alloc: Allocator, writer: W) !@This() {
-            return @This(){
-                .builder = Builder{ .writer = writer },
-                .arena = std.heap.ArenaAllocator.init(alloc),
-                .colormap = ColMap.init(alloc),
-            };
-        }
-        pub fn deinit(self: *@This()) @This() {
-            self.arena.deinit();
-            self.arena2.deinit();
-            self.colormap.deinit();
-        }
-        pub fn write_path(
-            self: *@This(),
-            pathlist: []const Segment,
-            stack: *const Stack(InheritableProperties),
-        ) !void {
-            const stroke_width = stack.top().?.@"stroke-width" orelse self.default_stroke_width;
-            const fill = InheritableProperties.resolve_color_property(stack, "fill");
-            const stroke = InheritableProperties.resolve_color_property(stack, "stroke");
+pub fn write_path(
+    self: *const @This(),
+    arena_alloc: Allocator,
+    builder: anytype,
+    pathlist: []Segment,
+    stack: *const Stack(InheritableProperties),
+) !void {
+    const stroke_width = stack.top().?.@"stroke-width" orelse self.default_stroke_width;
+    const fill = try InheritableProperties.resolve_color_property(stack, "fill");
+    const stroke = try InheritableProperties.resolve_color_property(stack, "stroke");
 
-            if (fill) |col| {
-                const col_idx = self.colormap.get(.fromColor(col)).?;
-                try self.builder.writeFillPath(.{ .flat = col_idx }, pathlist);
+    if (fill) |col| {
+        log_seg(pathlist);
+        const col_idx = try self.get_col(col);
+        try builder.writeFillPath(.{ .flat = col_idx }, pathlist);
+    }
+    if (stroke) |col| {
+        log_seg(pathlist);
+        for (pathlist) |*seg| {
+            const node_dup = try arena_alloc.alloc(Node, seg.commands.len);
+            for (seg.commands, node_dup) |n, *nd| {
+                nd.* = n;
+                switch (n) {
+                    .line => |_| nd.line.line_width = stroke_width,
+                    .horiz => |_| nd.horiz.line_width = stroke_width,
+                    .vert => |_| nd.vert.line_width = stroke_width,
+                    .bezier => |_| nd.bezier.line_width = stroke_width,
+                    .arc_circle => |_| nd.arc_circle.line_width = stroke_width,
+                    .arc_ellipse => |_| nd.arc_ellipse.line_width = stroke_width,
+                    .close => |_| nd.close.line_width = stroke_width,
+                    .quadratic_bezier => |_| nd.quadratic_bezier.line_width = stroke_width,
+                }
             }
-            if (stroke) |col| {
-                for (@constCast(pathlist)) |*seg| {
-                    for (@constCast(seg.commands)) |*n| {
-                        switch (n.*) {
-                            .line => |_| n.line.line_width = stroke_width,
-                            .horiz => |_| n.horiz.line_width = stroke_width,
-                            .vert => |_| n.vert.line_width = stroke_width,
-                            .bezier => |_| n.bezier.line_width = stroke_width,
-                            .arc_circle => |_| n.arc_circle.line_width = stroke_width,
-                            .arc_ellipse => |_| n.arc_ellipse.line_width = stroke_width,
-                            .close => |_| n.close.line_width = stroke_width,
-                            .quadratic_bezier => |_| n.quadratic_bezier.line_width = stroke_width,
+            seg.commands = node_dup;
+        }
+        const col_idx = try self.get_col(col);
+        try builder.writeDrawPath(.{ .flat = col_idx }, stroke_width, pathlist);
+    }
+}
+
+pub fn parse_colors_and_svg(popts: *const @This(), gpa: Allocator, svg_bytes: []const u8) !struct { []const Color, Svg } {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var fbuffs = std.io.fixedBufferStream(svg_bytes);
+    var xml_res = xml.streamingDocument(alloc, fbuffs.reader());
+    var reader = xml_res.reader(alloc, .{});
+    var colormap = ColMap.init(alloc);
+
+    var colortable_len: u32 = 0;
+    try colormap.put(.fromColor(popts.default_color.col), colortable_len);
+    colortable_len += 1;
+    var svg = Svg{};
+
+    while (true) {
+        const xml_node = reader.read() catch |err| switch (err) {
+            error.MalformedXml => {
+                const loc = reader.errorLocation();
+                std.log.err("{}:{}: {}", .{ loc.line, loc.column, reader.errorCode() });
+                return error.MalformedXml;
+            },
+            else => |other| return other,
+        };
+        switch (xml_node) {
+            .element_start => {
+                const element_name = reader.elementNameNs();
+                const element_tag = element_name.local;
+                const att_count = reader.reader.attributeCount();
+
+                if (std.mem.eql(u8, "svg", element_tag)) {
+                    const att_names = try alloc.alloc([]const u8, att_count);
+                    const att_vals = try alloc.alloc([]const u8, att_count);
+                    for (att_names, att_vals, 0..) |*n, *v, i| {
+                        n.* = try alloc.dupe(u8, reader.attributeNameNs(i).local);
+                        v.* = try alloc.dupe(u8, try reader.attributeValue(i));
+                    }
+                    try svg.parse(alloc, att_names, att_vals);
+                }
+                for (0..att_count) |i| {
+                    const att_name = reader.attributeNameNs(i).local;
+                    const att_val = try reader.attributeValue(i);
+                    inline for (ColorProperties) |p| {
+                        const c = try utils.parseColor(p, att_name, att_val);
+                        if (c) |col| {
+                            const maybe_key = col.get_hash_key();
+                            if (maybe_key) |key| {
+                                if (colormap.getKey(key) == null) {
+                                    try colormap.put(key, colortable_len);
+                                    colortable_len += 1;
+                                }
+                            }
                         }
                     }
                 }
-                const col_idx = self.colormap.get(.fromColor(col)).?;
-                try self.builder.writeDrawPath(.{ .flat = col_idx }, stroke_width, pathlist);
-            }
+            },
+            else => {},
+            .eof => break,
         }
+    }
+    try svg.check();
+    const colors_hash = colormap.keys();
+    const colors = try gpa.alloc(Color, colors_hash.len);
 
-        pub fn parse_colors_and_svg(self: *@This(), svg_bytes: []const u8) !void {
-            var fbuffs = std.io.fixedBufferStream(svg_bytes);
-            var xml_res = xml.streamingDocument(self.arena.child_allocator, fbuffs.reader());
-            defer xml_res.deinit();
-            var reader = xml_res.reader(self.arena.child_allocator, .{});
-            defer reader.deinit();
-
-            try self.colormap.put(.fromColor(self.default_color.col), math.cast(u32, self.colortable_len) orelse return error.IndexOOB);
-            self.colortable_len += 1;
-
-            while (true) {
-                const node = reader.read() catch |err| switch (err) {
-                    error.MalformedXml => {
-                        const loc = reader.errorLocation();
-                        std.log.err("{}:{}: {}", .{ loc.line, loc.column, reader.errorCode() });
-                        return error.MalformedXml;
-                    },
-                    else => |other| return other,
-                };
-                switch (node) {
-                    .element_start => {
-                        const garbage_alloc = self.arena.allocator();
-                        const element_name = reader.elementNameNs();
-                        const element_tag = element_name.local;
-                        const att_count = reader.reader.attributeCount();
-
-                        if (std.mem.eql(u8, "svg", element_tag)) {
-                            const att_names = try garbage_alloc.alloc([]const u8, att_count);
-                            const att_vals = try garbage_alloc.alloc([]const u8, att_count);
-                            for (att_names, att_vals, 0..) |*n, *v, i| {
-                                n.* = try garbage_alloc.dupe(u8, reader.attributeNameNs(i).local);
-                                v.* = try garbage_alloc.dupe(u8, try reader.attributeValue(i));
-                            }
-                            var svg = Svg{};
-                            try svg.parse(garbage_alloc, att_names, att_vals);
-                            try svg.check();
-                            self.svg = svg;
-                        }
-                        for (0..att_count) |i| {
-                            const att_name = reader.attributeNameNs(i).local;
-                            const att_val = try reader.attributeValue(i);
-                            inline for (ColorProperties) |p| {
-                                const c = try utils.parseColor(p, att_name, att_val);
-                                if (c) |col| {
-                                    const maybe_key = col.get_hash_key();
-                                    if (maybe_key) |key| {
-                                        if (self.colormap.getKey(key) == null) {
-                                            try self.colormap.put(key, math.cast(u32, self.colortable_len) orelse return error.IndexOOB);
-                                            self.colortable_len += 1;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        _ = self.arena.reset(.retain_capacity);
-                    },
-                    else => {},
-                    .eof => break,
-                }
-            }
-        }
-        pub fn svg_width(self: *@This()) u32 {
-            return @intFromFloat(self.svg.width.?);
-        }
-        pub fn svg_height(self: *@This()) u32 {
-            return @intFromFloat(self.svg.height.?);
-        }
-
-        pub fn run(self: *@This(), svg_bytes: []const u8) !void {
-            try self.parse_colors_and_svg(svg_bytes);
-
-            const gpa = self.arena.child_allocator;
-            var fbuffs = std.io.fixedBufferStream(svg_bytes);
-            var xml_res = xml.streamingDocument(gpa, fbuffs.reader());
-            defer xml_res.deinit();
-            var reader = xml_res.reader(gpa, .{});
-            defer reader.deinit();
-
-            try self.builder.writeHeader(self.svg_width(), self.svg_height(), Scale.@"1/4096", .u8888, Range.enhanced);
-
-            const colors_hash = self.colormap.keys();
-            const colors = try gpa.alloc(Color, colors_hash.len);
-            defer gpa.free(colors);
-            if (debug) std.log.warn("writing colortable: RGBA", .{});
-            for (colors, colors_hash, 0..) |*v, v2, i| {
-                const c = v2.toColor();
-                v.* = c;
-                if (debug) std.log.warn("- {} | [{d:.1} {d:.1} {d:.1} {d:.1}]", .{ i, c.r, c.g, c.b, c.a });
-            }
-
-            try self.builder.writeColorTable(colors);
-
-            var stack = try Stack(InheritableProperties).init(gpa, 128);
-            defer stack.deinit(gpa);
-            try stack.push(InheritableProperties{
-                .opacity = 1.0,
-                .@"fill-opacity" = 1.0,
-                .@"stroke-opacity" = 1.0,
-                .@"stroke-width" = self.default_stroke_width,
-                .color = self.default_color,
-                .fill = self.default_color,
-                .stroke = self.default_color,
-            });
-
-            var layer_arena = std.heap.ArenaAllocator.init(gpa);
-            defer layer_arena.deinit();
-            var found_svg_tag = false;
-
-            while (true) {
-                const node = reader.read() catch |err| switch (err) {
-                    error.MalformedXml => {
-                        const loc = reader.errorLocation();
-                        std.log.err("{}:{}: {}", .{ loc.line, loc.column, reader.errorCode() });
-                        return error.MalformedXml;
-                    },
-                    else => |other| return other,
-                };
-                switch (node) {
-                    .element_start => {
-                        const element_name = reader.elementNameNs();
-                        const element_tag = element_name.local;
-                        const current_properties = stack.top() orelse InheritableProperties{};
-                        if (!found_svg_tag) {
-                            if (std.mem.eql(u8, "svg", element_tag)) {
-                                found_svg_tag = true;
-                                try stack.push(current_properties);
-                                const top_mut = stack.top_mut().?;
-                                top_mut.override_from(self.svg);
-                                continue;
-                            }
-                        } else {
-                            try stack.push(current_properties);
-                            const top_mut = stack.top_mut().?;
-                            const garbage_alloc = self.arena2.allocator();
-                            var maker = NodeMaker.init(garbage_alloc, self.svg);
-
-                            // std.log.warn(
-                            //     \\element_start:  {}
-                            // , .{
-                            //     std.zig.fmtEscapes(element_name.local),
-                            // });
-
-                            const att_count = reader.reader.attributeCount();
-                            const att_names = try self.arena2.allocator().alloc([]const u8, att_count);
-                            const att_vals = try self.arena2.allocator().alloc([]const u8, att_count);
-
-                            for (att_names, att_vals, 0..) |*n, *v, i| {
-                                n.* = try garbage_alloc.dupe(u8, reader.attributeNameNs(i).local);
-                                v.* = try garbage_alloc.dupe(u8, try reader.attributeValue(i));
-                            }
-                            // Container
-                            if (std.mem.eql(u8, "g", element_tag)) {
-                                var element = G{};
-                                try element.parse(att_names, att_vals);
-                                top_mut.override_from(element);
-                                continue;
-                            } else
-                            // Drawing Primitives
-                            if (std.mem.eql(u8, "rect", element_tag)) {
-                                var element = Rect{};
-                                try element.parse(&maker, att_names, att_vals);
-                                top_mut.override_from(element);
-                                if (try maker.segments()) |segs| {
-                                    try self.write_path(segs, &stack);
-                                }
-                            } else if (std.mem.eql(u8, "circle", element_tag)) {
-                                var element = Circle{};
-                                try element.parse(&maker, att_names, att_vals);
-                                top_mut.override_from(element);
-                                if (try maker.segments()) |segs| {
-                                    try self.write_path(segs, &stack);
-                                }
-                            } else if (std.mem.eql(u8, "ellipse", element_tag)) {
-                                var element = Ellipse{};
-                                try element.parse(&maker, att_names, att_vals);
-                                top_mut.override_from(element);
-                                if (try maker.segments()) |segs| {
-                                    try self.write_path(segs, &stack);
-                                }
-                            } else if (std.mem.eql(u8, "line", element_tag)) {
-                                var element = Line{};
-                                try element.parse(&maker, att_names, att_vals);
-                                top_mut.override_from(element);
-                                if (try maker.segments()) |segs| {
-                                    try self.write_path(segs, &stack);
-                                }
-                            } else if (std.mem.eql(u8, "polyline", element_tag)) {
-                                var element = PolyLine{};
-                                try element.parse(&maker, garbage_alloc, att_names, att_vals);
-                                top_mut.override_from(element);
-                                if (try maker.segments()) |segs| {
-                                    try self.write_path(segs, &stack);
-                                }
-                            } else if (std.mem.eql(u8, "polygon", element_tag)) {
-                                var element = Polygon{};
-                                try element.parse(&maker, garbage_alloc, att_names, att_vals);
-                                top_mut.override_from(element);
-                                if (try maker.segments()) |segs| {
-                                    try self.write_path(segs, &stack);
-                                }
-                            } else if (std.mem.eql(u8, "path", element_tag)) {
-                                var element = SvgPath{};
-                                try element.parse(&maker, garbage_alloc, att_names, att_vals);
-                                top_mut.override_from(element);
-
-                                if (try maker.segments()) |segs| {
-                                    try self.write_path(segs, &stack);
-                                    try self.write_path(segs, &stack);
-                                    if (debug) {
-                                        std.log.warn("PRINT SEG BEGIN", .{});
-                                        for (segs) |sg| {
-                                            ut.print_point("start", sg.start);
-                                            for (sg.commands) |sn| {
-                                                ut.print_node(sn);
-                                            }
-                                        }
-                                        std.log.warn("PRINT SEG END", .{});
-                                    }
-                                } else std.log.warn("no segments", .{});
-                            } else {
-                                std.log.warn("unrecognized element: {s}", .{element_tag});
-                            }
-                            // dispose of the garbage
-                            _ = self.arena2.reset(.retain_capacity);
-                        }
-                    },
-                    .element_end => {
-                        _ = stack.pop();
-                    },
-                    else => {},
-                    .eof => break,
-                }
-            }
-            try self.builder.writeEndOfFile();
-        }
-    };
+    if (debug) std.log.warn("colortable: RGBA", .{});
+    for (colors, colors_hash, 0..) |*v, v2, i| {
+        const c = v2.toColor();
+        v.* = c;
+        if (debug) std.log.warn("- {} | [{d:.1} {d:.1} {d:.1} {d:.1}]", .{ i, c.r, c.g, c.b, c.a });
+    }
+    return .{ colors, svg };
 }
 
-pub fn tvg_from_svg(alloc: Allocator, writer: anytype, svg_bytes: []const u8) !void {
-    var con = try SvgConverter(@TypeOf(writer)).init(alloc, writer);
-    defer con.deinit();
-    try con.run(svg_bytes);
+pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]const u8 {
+    var popts = opts;
+    const colors, const svg = try parse_colors_and_svg(&popts, gpa, svg_bytes);
+    popts.color_table = colors;
+    var writer = std.ArrayList(u8).init(gpa);
+    defer writer.deinit();
+
+    var builder = tvg.builder.create(writer.writer());
+
+    var fbuffs = std.io.fixedBufferStream(svg_bytes);
+    var xml_res = xml.streamingDocument(gpa, fbuffs.reader());
+    defer xml_res.deinit();
+    var reader = xml_res.reader(gpa, .{});
+    defer reader.deinit();
+
+    const sw: u32 = @intFromFloat(svg.width.?);
+    const sh: u32 = @intFromFloat(svg.height.?);
+    try builder.writeHeader(sw, sh, Scale.@"1/4096", .u8888, Range.enhanced);
+
+    try builder.writeColorTable(colors);
+
+    var stack = try Stack(InheritableProperties).init(gpa, popts.xml_max_nesting, InheritableProperties{});
+    defer stack.deinit(gpa);
+
+    try stack.push(InheritableProperties{
+        .opacity = 1.0,
+        .@"fill-opacity" = 1.0,
+        .@"stroke-opacity" = 1.0,
+        .@"stroke-width" = popts.default_stroke_width,
+        .color = popts.default_color,
+        .fill = popts.default_color,
+        .stroke = popts.default_color,
+    });
+
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    var found_svg_tag = false;
+    while (true) {
+        const node = reader.read() catch |err| switch (err) {
+            error.MalformedXml => {
+                const loc = reader.errorLocation();
+                std.log.err("{}:{}: {}", .{ loc.line, loc.column, reader.errorCode() });
+                return error.MalformedXml;
+            },
+            else => |other| return other,
+        };
+        switch (node) {
+            .element_start => {
+                const garbage_alloc = arena.allocator();
+                const element_name = reader.elementNameNs();
+                const element_tag = element_name.local;
+                const current_properties = stack.top() orelse InheritableProperties{};
+                try stack.push(current_properties);
+                if (!found_svg_tag) {
+                    if (std.mem.eql(u8, "svg", element_tag)) {
+                        found_svg_tag = true;
+                        const top_mut = stack.top_mut().?;
+                        top_mut.override_from(svg);
+                    }
+                } else {
+                    const top_mut = stack.top_mut().?;
+                    var maker = NodeMaker.init(garbage_alloc, svg);
+
+                    const att_count = reader.reader.attributeCount();
+                    const att_names = try garbage_alloc.alloc([]const u8, att_count);
+                    const att_vals = try garbage_alloc.alloc([]const u8, att_count);
+
+                    for (att_names, att_vals, 0..) |*n, *v, i| {
+                        n.* = try garbage_alloc.dupe(u8, reader.attributeNameNs(i).local);
+                        v.* = try garbage_alloc.dupe(u8, try reader.attributeValue(i));
+                    }
+                    // Container
+                    if (std.mem.eql(u8, "g", element_tag)) {
+                        var element = G{};
+                        try element.parse(att_names, att_vals);
+                        top_mut.override_from(element);
+                    } else
+                    // Drawing Primitives
+                    if (std.mem.eql(u8, "rect", element_tag)) {
+                        var element = Rect{};
+                        try element.parse(&maker, att_names, att_vals);
+                        top_mut.override_from(element);
+                        if (try maker.segments()) |segs| {
+                            try write_path(&popts, garbage_alloc, &builder, segs, &stack);
+                        }
+                    } else if (std.mem.eql(u8, "circle", element_tag)) {
+                        var element = Circle{};
+                        try element.parse(&maker, att_names, att_vals);
+                        top_mut.override_from(element);
+                        if (try maker.segments()) |segs| {
+                            try write_path(&popts, garbage_alloc, &builder, segs, &stack);
+                        }
+                    } else if (std.mem.eql(u8, "ellipse", element_tag)) {
+                        var element = Ellipse{};
+                        try element.parse(&maker, att_names, att_vals);
+                        top_mut.override_from(element);
+                        if (try maker.segments()) |segs| {
+                            try write_path(&popts, garbage_alloc, &builder, segs, &stack);
+                        }
+                    } else if (std.mem.eql(u8, "line", element_tag)) {
+                        var element = Line{};
+                        try element.parse(&maker, att_names, att_vals);
+                        top_mut.override_from(element);
+                        if (try maker.segments()) |segs| {
+                            try write_path(&popts, garbage_alloc, &builder, segs, &stack);
+                        }
+                    } else if (std.mem.eql(u8, "polyline", element_tag)) {
+                        var element = PolyLine{};
+                        try element.parse(&maker, garbage_alloc, att_names, att_vals);
+                        top_mut.override_from(element);
+                        if (try maker.segments()) |segs| {
+                            try write_path(&popts, garbage_alloc, &builder, segs, &stack);
+                        }
+                    } else if (std.mem.eql(u8, "polygon", element_tag)) {
+                        var element = Polygon{};
+                        try element.parse(&maker, garbage_alloc, att_names, att_vals);
+                        top_mut.override_from(element);
+                        if (try maker.segments()) |segs| {
+                            try write_path(&popts, garbage_alloc, &builder, segs, &stack);
+                        }
+                    } else if (std.mem.eql(u8, "path", element_tag)) {
+                        var element = SvgPath{};
+                        try element.parse(&maker, garbage_alloc, att_names, att_vals);
+                        top_mut.override_from(element);
+
+                        if (try maker.segments()) |segs| {
+                            try write_path(&popts, garbage_alloc, &builder, segs, &stack);
+                            if (debug) log_seg(segs);
+                        } else std.debug.print("no segments", .{});
+                    } else {
+                        std.log.warn("unrecognized element: {s}", .{element_tag});
+                    }
+                }
+                _ = arena.reset(.retain_capacity);
+            },
+            .element_end => {
+                _ = stack.pop();
+            },
+            else => {},
+            .eof => break,
+        }
+    }
+    try builder.writeEndOfFile();
+    return writer.toOwnedSlice();
+}
+fn log_seg(segs: []const Segment) void {
+    std.log.warn("PRINT SEG BEGIN", .{});
+    for (segs) |sg| {
+        ut.print_point("start", sg.start);
+        for (sg.commands) |sn| {
+            ut.print_node(sn);
+        }
+    }
+    std.log.warn("PRINT SEG END", .{});
 }
 
 pub const make_node_debug = true and debug;
@@ -1116,6 +1099,6 @@ pub const make_node_debug2 = false and debug;
 const debug = false;
 
 test "coverage" {
-    _ = .{ tvg_from_svg, SvgConverter, renderStream };
+    _ = .{ tvg_from_svg, renderStream };
     std.log.warn("ok", .{});
 }

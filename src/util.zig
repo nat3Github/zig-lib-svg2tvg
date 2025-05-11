@@ -40,33 +40,43 @@ pub const ImageWrapper = struct {
 pub fn Stack(T: type) type {
     return struct {
         data: []T,
-        pos: usize = 0,
-        pub fn init(alloc: Allocator, size: usize) !@This() {
-            return @This(){
-                .data = try alloc.alloc(T, size),
-            };
+        posplus1: usize = 0,
+        pub fn init(alloc: Allocator, size: usize, def: T) !@This() {
+            const data = try alloc.alloc(T, size);
+            for (data) |*d| d.* = def;
+            return @This(){ .data = data, .posplus1 = 0 };
         }
         pub fn deinit(self: *@This(), alloc: Allocator) void {
             alloc.free(self.data);
         }
         pub fn push(self: *@This(), t: T) !void {
-            if (self.pos > self.data.len) return error.OutOfBounds;
-            self.data[self.pos] = t;
-            self.pos += 1;
+            if (self.posplus1 > self.data.len) return error.OutOfBounds;
+            self.data[self.posplus1] = t;
+            self.posplus1 += 1;
         }
         pub fn pop(self: *@This()) ?T {
-            if (self.pos == 0) return null;
+            if (self.posplus1 == 0) return null;
             const xtop = self.top();
-            self.pos -= 1;
+            self.posplus1 -= 1;
             return xtop;
         }
         pub fn top(self: *const @This()) ?T {
-            if (self.pos == 0) return null;
-            return self.data[self.pos - 1];
+            if (self.posplus1 == 0) return null;
+            return self.data[self.posplus1 - 1];
         }
         pub fn top_mut(self: *@This()) ?*T {
-            if (self.pos == 0) return null;
-            return &self.data[self.pos - 1];
+            if (self.posplus1 == 0) return null;
+            return &self.data[self.posplus1 - 1];
+        }
+        pub fn top_index(self: *const @This()) ?usize {
+            if (self.posplus1 == 0) return null;
+            return self.posplus1 - 1;
+        }
+        pub fn get(self: *const @This(), idx: usize) !T {
+            if (self.posplus1 == 0) return error.Empty;
+            const idx_real = idx - 1;
+            if (idx_real > self.posplus1) return error.AccessOutOfBounds;
+            return self.data[idx_real];
         }
     };
 }
@@ -105,7 +115,8 @@ pub const utils = struct {
     }
     pub fn parseColor(property_name: []const u8, att: []const u8, val: []const u8) !?SvgColor {
         if (std.mem.eql(u8, property_name, att)) {
-            return SvgColor.parseColor(val);
+            const col = SvgColor.parseColor(val);
+            return col;
         }
         return null;
     }
@@ -237,7 +248,7 @@ pub const NodeMaker = struct {
         try self.cmds.append(nd);
         if (make_node_debug) std.log.warn("nodemakercirx arc", .{});
     }
-    pub fn segments(self: *@This()) !?[]const Segment {
+    pub fn segments(self: *@This()) !?[]Segment {
         for (0..self.iseg.items.len) |_| {
             try self.seg.append(Segment{ .commands = &.{}, .start = .{ .x = 0, .y = 0 } });
         }
