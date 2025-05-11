@@ -20,7 +20,9 @@ pub const z2d = @import("z2d");
 
 const tinyvg2 = @import("tinyvg/tinyvg.zig");
 pub const tvg = tinyvg2;
-pub const renderStream = @import("render.zig").renderStream;
+const librender = @import("render.zig");
+pub const renderStream = librender.renderStream;
+pub const RenderOptions = librender.Options;
 
 pub const Color = tvg.Color;
 const Path = tvg.Path;
