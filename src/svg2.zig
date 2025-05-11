@@ -25,7 +25,7 @@ pub fn parse_path_data(allocator: std.mem.Allocator, d: []const u8) ![]Command {
 
     var tokens = std.ArrayList([]const u8).init(allocator);
     while (it.next()) |token| {
-        std.log.warn("token: {s}", .{token});
+        // std.log.warn("token: {s}", .{token});
         var start: usize = 0;
         var dot: bool = false;
         var i: usize = 0;
@@ -59,7 +59,7 @@ pub fn parse_path_data(allocator: std.mem.Allocator, d: []const u8) ![]Command {
         if (start != token.len)
             try tokens.append(token[start..token.len]);
     }
-    for (tokens.items) |tk| std.log.warn("{s}", .{tk});
+    // for (tokens.items) |tk| std.log.warn("{s}", .{tk});
 
     var current_cmd: ?u8 = null;
     var is_relative: bool = false;

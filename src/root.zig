@@ -773,7 +773,6 @@ const SvgPath = struct {
                             }
                         },
                         .close_path => {
-                            std.debug.print("close_path\n", .{});
                             try maker.close();
                         },
                     }

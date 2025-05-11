@@ -32,7 +32,8 @@ const Shim = struct {
     height: isize,
 };
 pub const Options = struct {
-    overwrite_stroke_width: ?f32 = null, // overwrite stroke_width
+    fallback_stroke_width: ?f32 = 0.5, // overwrite stroke_width
+    overwrite_stroke_width: ?f32 = null, // fallback stroke_width
     overwrite_fill: ?Color = null, // overwrite all colors used to color
     overwrite_stroke: ?Color = null, // overwrite stroke colors
     use_z2d_for_stroke: bool = true, // either use z2d as painter or the custom painter (Shimpainter2 -> stroke.zig) NOTE: z2d has a bug with closing paths on the same point https://github.com/vancluever/z2d/issues/116 it seems to be working with a workaround i found (search for workaround)
@@ -73,7 +74,7 @@ pub fn renderStream(
 
     var ctx = z2d.Context.init(alloc, &sfc);
     defer ctx.deinit();
-    const lwdef = 1.5;
+    const lwdef: f32 = opts.fallback_stroke_width orelse 1.5;
 
     var prop = ShimProp{
         .lwdef = opts.overwrite_stroke_width orelse lwdef,
