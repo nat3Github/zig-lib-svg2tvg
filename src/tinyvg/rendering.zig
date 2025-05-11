@@ -295,7 +295,7 @@ const bezier_divs = 16;
 
 const max_path_len = 512;
 
-const IndexSlice = struct { offset: usize, len: usize };
+pub const IndexSlice = struct { offset: usize, len: usize };
 
 // this is the allocation threshold for images.
 // when we go over this, we require `allocator` to be set.
@@ -897,7 +897,7 @@ fn getProjectedPointOnLine(v1: Point, v2: Point, p: Point) Point {
     return add(v1, scale(l1, proj));
 }
 
-const Painter = struct {
+pub const Painter = struct {
     scale_x: f32,
     scale_y: f32,
 
@@ -905,8 +905,8 @@ const Painter = struct {
     //     fillPolygonList(self, framebuffer, color_table, style, &[_][]const Point{points}, .nonzero);
     // }
 
-    const FillRule = enum { even_odd, nonzero };
-    fn fillPolygonList(self: Painter, framebuffer: anytype, color_table: []const Color, style: Style, points_lists: []const []const Point, rule: FillRule) void {
+    pub const FillRule = enum { even_odd, nonzero };
+    pub fn fillPolygonList(self: Painter, framebuffer: anytype, color_table: []const Color, style: Style, points_lists: []const []const Point, rule: FillRule) void {
         std.debug.assert(points_lists.len > 0);
 
         var min_x: i16 = std.math.maxInt(i16);
@@ -964,7 +964,14 @@ const Painter = struct {
                     .even_odd => (inside_count % 2) == 1,
                 };
                 if (set) {
-                    framebuffer.setPixel(x, y, self.sampleStlye(color_table, style, x, y));
+                    const col = self.sampleStlye(color_table, style, x, y);
+                    const colv: [4]u8 = .{
+                        @intFromFloat(std.math.clamp(col.r, 0, 1) * 255),
+                        @intFromFloat(std.math.clamp(col.g, 0, 1) * 255),
+                        @intFromFloat(std.math.clamp(col.b, 0, 1) * 255),
+                        @intFromFloat(std.math.clamp(col.a, 0, 1) * 255),
+                    };
+                    framebuffer.setPixel(x, y, colv);
                 }
             }
         }
@@ -1080,14 +1087,14 @@ const Painter = struct {
         }
     }
 
-    fn mapPointToImage(self: Painter, pt: Point) Point {
+    pub fn mapPointToImage(self: Painter, pt: Point) Point {
         return Point{
             .x = pt.x / self.scale_x,
             .y = pt.y / self.scale_y,
         };
     }
 
-    fn sampleStlye(self: Painter, color_table: []const Color, style: Style, x: i16, y: i16) Color {
+    pub fn sampleStlye(self: Painter, color_table: []const Color, style: Style, x: i16, y: i16) Color {
         return switch (style) {
             .flat => |index| color_table[index],
             .linear => |grad| blk: {
@@ -1276,4 +1283,171 @@ fn floatToIntClamped(comptime I: type, f: anytype) I {
     if (f > std.math.maxInt(I))
         return std.math.maxInt(I);
     return @intFromFloat(f);
+}
+
+pub fn renderCommand2(
+    /// A struct that exports a single function `setPixel(x: isize, y: isize, color: [4]u8) void` as well as two fields width and height
+    framebuffer: anytype,
+    /// The parsed header of a TVG
+    header: parsing.Header,
+    /// The color lookup table
+    color_table: []const tvg.Color,
+    /// The command that should be executed.
+    cmd: parsing.DrawCommand,
+    /// When given, the `renderCommand` is able to render complexer graphics
+    allocator: ?std.mem.Allocator,
+) !void {
+    if (!comptime isFramebuffer(@TypeOf(framebuffer)))
+        @compileError("framebuffer needs fields width, height and function setPixel!");
+    const fb_width: f32 = @floatFromInt(framebuffer.width);
+    const fb_height: f32 = @floatFromInt(framebuffer.height);
+    // std.debug.print("render {}\n", .{cmd});#
+
+    var painter = Painter{
+        .scale_x = fb_width / @as(f32, @floatFromInt(header.width)),
+        .scale_y = fb_height / @as(f32, @floatFromInt(header.height)),
+    };
+
+    switch (cmd) {
+        .fill_polygon => |data| {
+            painter.fillPolygonList(framebuffer, color_table, data.style, &[_][]const Point{data.vertices}, .even_odd);
+        },
+        .fill_rectangles => |data| {
+            for (data.rectangles) |rect| {
+                painter.fillRectangle(framebuffer, rect.x, rect.y, rect.width, rect.height, color_table, data.style);
+            }
+        },
+        .fill_path => |data| {
+            var point_store = FixedBufferList(Point, temp_buffer_size).init(allocator);
+            defer point_store.deinit();
+            var slice_store = FixedBufferList(IndexSlice, temp_buffer_size).init(allocator);
+            defer slice_store.deinit();
+
+            try renderPath(&point_store, null, &slice_store, data.path, 0.0);
+
+            var slices: [max_path_len][]const Point = undefined;
+            for (slice_store.items(), 0..) |src, i| {
+                slices[i] = point_store.items()[src.offset..][0..src.len];
+            }
+
+            painter.fillPolygonList(
+                framebuffer,
+                color_table,
+                data.style,
+                slices[0..slice_store.items().len],
+                .even_odd,
+            );
+        },
+        .draw_lines => |data| {
+            for (data.lines) |line| {
+                painter.drawLine(framebuffer, color_table, data.style, data.line_width, data.line_width, line);
+            }
+        },
+        .draw_line_strip => |data| {
+            for (data.vertices[1..], 0..) |end, i| {
+                const start = data.vertices[i]; // is actually [i-1], but we access the slice off-by-one!
+                painter.drawLine(framebuffer, color_table, data.style, data.line_width, data.line_width, .{
+                    .start = start,
+                    .end = end,
+                });
+            }
+        },
+        .draw_line_loop => |data| {
+            var start_index: usize = data.vertices.len - 1;
+            for (data.vertices, 0..) |end, end_index| {
+                const start = data.vertices[start_index];
+
+                painter.drawLine(framebuffer, color_table, data.style, data.line_width, data.line_width, .{
+                    .start = start,
+                    .end = end,
+                });
+                start_index = end_index;
+            }
+        },
+        .draw_line_path => |data| {
+            var point_store = FixedBufferList(Point, temp_buffer_size).init(allocator);
+            defer point_store.deinit();
+            var width_store = FixedBufferList(f32, temp_buffer_size).init(allocator);
+            defer width_store.deinit();
+            var slice_store = FixedBufferList(IndexSlice, temp_buffer_size).init(allocator);
+            defer slice_store.deinit();
+
+            try renderPath(&point_store, &width_store, &slice_store, data.path, data.line_width);
+
+            const slice_size = slice_store.buffer.len;
+            var slices: [slice_size][]const Point = undefined;
+            for (slice_store.items(), 0..) |src, i| {
+                slices[i] = point_store.items()[src.offset..][0..src.len];
+            }
+
+            const line_widths = width_store.items();
+
+            for (slices[0..slice_store.items().len]) |vertices| {
+                for (vertices[1..], 0..) |end, i| {
+                    const start = vertices[i]; // is actually [i-1], but we access the slice off-by-one!
+                    painter.drawLine(framebuffer, color_table, data.style, line_widths[i], line_widths[i + 1], .{
+                        .start = start,
+                        .end = end,
+                    });
+                }
+            }
+        },
+        .outline_fill_polygon => |data| {
+            painter.fillPolygonList(framebuffer, color_table, data.fill_style, &[_][]const Point{data.vertices}, .even_odd);
+
+            var start_index: usize = data.vertices.len - 1;
+            for (data.vertices, 0..) |end, end_index| {
+                const start = data.vertices[start_index];
+
+                painter.drawLine(framebuffer, color_table, data.line_style, data.line_width, data.line_width, .{
+                    .start = start,
+                    .end = end,
+                });
+                start_index = end_index;
+            }
+        },
+
+        .outline_fill_rectangles => |data| {
+            for (data.rectangles) |rect| {
+                painter.fillRectangle(framebuffer, rect.x, rect.y, rect.width, rect.height, color_table, data.fill_style);
+                const tl = Point{ .x = rect.x, .y = rect.y };
+                const tr = Point{ .x = rect.x + rect.width, .y = rect.y };
+                const bl = Point{ .x = rect.x, .y = rect.y + rect.height };
+                const br = Point{ .x = rect.x + rect.width, .y = rect.y + rect.height };
+                painter.drawLine(framebuffer, color_table, data.line_style, data.line_width, data.line_width, .{ .start = tl, .end = tr });
+                painter.drawLine(framebuffer, color_table, data.line_style, data.line_width, data.line_width, .{ .start = tr, .end = br });
+                painter.drawLine(framebuffer, color_table, data.line_style, data.line_width, data.line_width, .{ .start = br, .end = bl });
+                painter.drawLine(framebuffer, color_table, data.line_style, data.line_width, data.line_width, .{ .start = bl, .end = tl });
+            }
+        },
+        .outline_fill_path => |data| {
+            var point_store = FixedBufferList(Point, temp_buffer_size).init(allocator);
+            defer point_store.deinit();
+            var width_store = FixedBufferList(f32, temp_buffer_size).init(allocator);
+            defer width_store.deinit();
+            var slice_store = FixedBufferList(IndexSlice, temp_buffer_size).init(allocator);
+            defer slice_store.deinit();
+
+            try renderPath(&point_store, &width_store, &slice_store, data.path, data.line_width);
+
+            var slices: [max_path_len][]const Point = undefined;
+            for (slice_store.items(), 0..) |src, i| {
+                slices[i] = point_store.items()[src.offset..][0..src.len];
+            }
+
+            painter.fillPolygonList(framebuffer, color_table, data.fill_style, slices[0..slice_store.items().len], .even_odd);
+
+            const line_widths = width_store.items();
+
+            for (slices[0..slice_store.items().len]) |vertices| {
+                for (vertices[1..], 0..) |end, i| {
+                    const start = vertices[i]; // is actually [i-1], but we access the slice off-by-one!
+                    painter.drawLine(framebuffer, color_table, data.line_style, line_widths[i], line_widths[i + 1], .{
+                        .start = start,
+                        .end = end,
+                    });
+                }
+            }
+        },
+    }
 }

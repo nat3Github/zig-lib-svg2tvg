@@ -113,7 +113,12 @@ const ViewBox = struct {
 };
 
 const InheritableProperties = struct {
-    fill: ?SvgColor = null, // Fill color
+    fill: ?SvgColor = .{ .col = .{
+        .r = 0,
+        .g = 0,
+        .b = 0,
+        .a = 1,
+    } }, // Fill color
     stroke: ?SvgColor = null, // Stroke (outline) color
     color: ?SvgColor = null, // Used as base color (currentColor, filters, etc.)
     @"fill-opacity": ?f32 = null, // Opacity of the fill
@@ -807,7 +812,7 @@ const G = struct {
 };
 
 svg: Svg = Svg{},
-xml_max_nesting: usize = 128,
+xml_max_nesting: usize = 256,
 default_stroke_width: f32 = 2,
 default_color: SvgColor = .{ .col = Color{
     .r = 0.0,
@@ -1094,7 +1099,7 @@ fn log_seg(segs: []const Segment) void {
 
 pub const make_node_debug = true and debug;
 pub const make_node_debug2 = false and debug;
-const debug = false;
+const debug = true;
 
 test "coverage" {
     _ = .{ tvg_from_svg, renderStream };

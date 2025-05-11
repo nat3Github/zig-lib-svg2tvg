@@ -90,9 +90,20 @@ pub const utils = struct {
             return false;
         }
     }
+    pub fn parseF32relaxed(val: []const u8) !f32 {
+        const l = len_or_last_first_char: {
+            for (val, 0..) |c, i| {
+                if (std.ascii.isAlphabetic(c)) {
+                    break :len_or_last_first_char i;
+                }
+            }
+            break :len_or_last_first_char val.len;
+        };
+        return try std.fmt.parseFloat(f32, val[0..l]);
+    }
     pub fn parseFloat(property_name: []const u8, att: []const u8, val: []const u8) !?f32 {
         if (std.mem.eql(u8, property_name, att)) {
-            return try std.fmt.parseFloat(f32, val);
+            return try parseF32relaxed(val);
         }
         return null;
     }
@@ -178,8 +189,8 @@ pub const NodeMaker = struct {
 
     pub fn flush(self: *NodeMaker) !void {
         if (make_node_debug) std.log.warn("flush", .{});
-        if (self.flushed) return;
-        self.flushed = true;
+        // if (self.flushed) return;
+        // self.flushed = true;
         const len = self.cmds.items.len;
         const command_len = len - self.cmds_len;
         if (command_len == 0) return;
@@ -194,7 +205,6 @@ pub const NodeMaker = struct {
     pub fn close(self: *NodeMaker) !void {
         const nd = self.m.close(self.lw);
         try self.cmds.append(nd);
-        try self.flush();
         if (make_node_debug) std.log.warn("nodmaker close", .{});
     }
     pub fn move(self: *NodeMaker, p: Point, rel: bool) !void {
@@ -249,6 +259,7 @@ pub const NodeMaker = struct {
         if (make_node_debug) std.log.warn("nodemakercirx arc", .{});
     }
     pub fn segments(self: *@This()) !?[]Segment {
+        try self.flush();
         for (0..self.iseg.items.len) |_| {
             try self.seg.append(Segment{ .commands = &.{}, .start = .{ .x = 0, .y = 0 } });
         }

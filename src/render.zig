@@ -32,7 +32,7 @@ const Shim = struct {
     height: isize,
 };
 pub const Options = struct {
-    fallback_stroke_width: ?f32 = 1.5, // fallback stroke_width
+    fallback_stroke_width: ?f32 = 1, // fallback stroke_width
     overwrite_stroke_width: ?f32 = null, // overwrite stroke_width
     overwrite_fill: ?Color = null, // overwrite all colors used to color
     overwrite_stroke: ?Color = null, // overwrite stroke colors
@@ -67,7 +67,7 @@ pub fn renderStream(
     const scaling_x = new_widthf32 / og_widthf32;
     const scaling_y = new_heightf32 / og_heightf32;
 
-    var sfc = try z2d.Surface.initPixel(.{ .rgba = .fromClamped(1, 0, 1, 1) }, gpa, @intCast(new_width), @intCast(new_height));
+    var sfc = try z2d.Surface.initPixel(.{ .rgba = .fromClamped(1, 0, 1, 0) }, gpa, @intCast(new_width), @intCast(new_height));
     defer sfc.deinit(allocator);
 
     var ctx = z2d.Context.init(gpa, &sfc);
@@ -93,23 +93,59 @@ pub fn renderStream(
         const props = try get_props(color_table, cmd);
         const segs = try flatten_into_path(arena_alloc, cmd, og_widthf32, og_heightf32);
 
-        for (segs) |seg| {
-            if (props.fill) |fill| {
-                if (!opts.disable_fill) {
-                    prop.setColor(opts.overwrite_fill orelse fill);
-                    try shim_fill.moveTo(.from(seg.start));
-                    try z2d_draw_seg(arena_alloc, &shim_fill, seg);
-                    try shim_fill.ctx.fill();
+        if (props.fill) |fill| {
+            // const painter = tvg.rendering.Painter{
+            //     .scale_x = scaling_x,
+            //     .scale_y = scaling_y,
+            // };
+
+            // if (true) debug_print_seg(seg);
+            std.log.warn("fill", .{});
+            if (!opts.disable_fill) {
+                // const ren = tvg.rendering;
+                // ren.renderCommand2(img_shim, header: parsing.Header, color_table: []const tvg.Color, cmd: parsing.DrawCommand, allocator: ?std.mem.Allocator)
+
+                const max_path_len = 512;
+                const temp_buffer_size = 256;
+                var point_store = tvg.rendering.FixedBufferList(Point, temp_buffer_size).init(allocator);
+                defer point_store.deinit();
+                var slice_store = tvg.rendering.FixedBufferList(tvg.rendering.IndexSlice, temp_buffer_size).init(allocator);
+                defer slice_store.deinit();
+
+                try tvg.rendering.renderPath(&point_store, null, &slice_store, Path{ .segments = segs }, 0.0);
+
+                var slices: [max_path_len][]const Point = undefined;
+                for (slice_store.items(), 0..) |src, i| {
+                    slices[i] = point_store.items()[src.offset..][0..src.len];
                 }
+                const style = get_style(cmd);
+                if (style != .flat) return error.Unsupported;
+                const point_list = slices[0..slice_store.items().len];
+
+                prop.setColor(opts.overwrite_fill orelse fill);
+                shim_fill.mode_fill = true;
+                shim_fill.ctx.setFillRule(.even_odd);
+                for (point_list) |list| {
+                    if (list.len > 3) {
+                        try shim_fill.moveTo(.from(list[0]));
+                        for (list[0 .. list.len - 1]) |p| {
+                            try shim_fill.lineTo(.from(p), 2);
+                        }
+                        try shim_fill.close();
+                    }
+                }
+                try shim_fill.flush();
             }
-            if (props.stroke) |stroke| {
+        }
+        if (props.stroke) |stroke| {
+            for (segs) |seg| {
                 if (opts.use_z2d_for_stroke) {
+                    shim_fill.mode_fill = false;
                     prop.setColor(opts.overwrite_fill orelse stroke);
                     try shim_fill.moveTo(.from(seg.start));
                     try z2d_draw_seg(arena_alloc, &shim_fill, seg);
                     try shim_fill.ctx.stroke();
                 } else {
-                    if (false) debug_print_seg(seg);
                     prop.setColor(opts.overwrite_stroke orelse stroke);
                     try shim_stroke.moveTo(.from(seg.start));
                     try z2d_draw_seg(arena_alloc, &shim_stroke, seg);
@@ -253,12 +289,32 @@ pub const ShimPainter2 = struct {
 pub const ShimPainter = struct {
     ctx: *z2d.Context,
     prop: *ShimProp,
+    mode_fill: bool = true,
+    flushed: bool = true,
+    closed: bool = false,
+
+    fn flush(self: *@This()) !void {
+        if (!self.flushed) {
+            if (self.mode_fill) {
+                if (self.closed == false) {
+                    try self.ctx.closePath();
+                    self.closed = true;
+                }
+                try self.ctx.fill();
+            } else try self.ctx.stroke();
+        }
+    }
     fn close(self: *@This()) !void {
+        self.closed = true;
         const ctx = self.ctx;
         try ctx.closePath();
+        // try self.flush();
     }
     fn moveTo(self: *@This(), p: Vec2) !void {
         const ctx = self.ctx;
+        // try self.flush();
+        self.closed = false;
+        self.flushed = false;
         const pt = self.prop.tranform(p);
         try ctx.moveTo(pt.x, pt.y);
         self.ctx.setLineCapMode(.round);
@@ -373,6 +429,20 @@ const FillProperties = struct {
     fill: ?Color = null,
     stroke: ?Color = null,
 };
+pub fn get_style(cmd: DrawCommand) Style {
+    return switch (cmd) {
+        .fill_path => |a| a.style,
+        .fill_polygon => |a| a.style,
+        .fill_rectangles => |a| a.style,
+        .outline_fill_path => |a| a.fill_style,
+        .outline_fill_polygon => |a| a.fill_style,
+        .outline_fill_rectangles => |a| a.fill_style,
+        .draw_lines => |a| a.style,
+        .draw_line_loop => |a| a.style,
+        .draw_line_strip => |a| a.style,
+        .draw_line_path => |a| a.style,
+    };
+}
 pub fn get_props(colors: []Color, cmd: DrawCommand) !FillProperties {
     return switch (cmd) {
         .fill_path => |a| FillProperties{ .fill = try get_color(colors, a.style) },
@@ -387,7 +457,7 @@ pub fn get_props(colors: []Color, cmd: DrawCommand) !FillProperties {
         .draw_line_path => |a| FillProperties{ .stroke = try get_color(colors, a.style) },
     };
 }
-pub fn flatten_into_path(alloc: Allocator, cmd: DrawCommand, og_width: f32, og_height: f32) ![]const Segment {
+pub fn flatten_into_path(alloc: Allocator, cmd: DrawCommand, og_width: f32, og_height: f32) ![]Segment {
     var m = ut.NodeMaker.init(alloc, Svg{
         .viewBox = .{ .h = og_height, .w = og_width, .x = 0, .y = 0 },
         .width = og_width,
@@ -433,7 +503,7 @@ pub fn flatten_into_path(alloc: Allocator, cmd: DrawCommand, og_width: f32, og_h
         },
     }
 }
-pub fn draw_rect(m: *ut.NodeMaker, rectangles: []const Rectangle) ![]const Segment {
+pub fn draw_rect(m: *ut.NodeMaker, rectangles: []const Rectangle) ![]Segment {
     for (rectangles) |rect| {
         const x = rect.x;
         const y = rect.y;
@@ -450,7 +520,7 @@ pub fn draw_rect(m: *ut.NodeMaker, rectangles: []const Rectangle) ![]const Segme
     }
     return &.{};
 }
-pub fn draw_points(m: *ut.NodeMaker, points: []const Point, close: bool) ![]const Segment {
+pub fn draw_points(m: *ut.NodeMaker, points: []const Point, close: bool) ![]Segment {
     assert(points.len > 0);
     try m.move(points[0], false);
     for (points[1..]) |l| {
@@ -458,7 +528,7 @@ pub fn draw_points(m: *ut.NodeMaker, points: []const Point, close: bool) ![]cons
     }
     if (close) try m.close();
     try m.flush();
-    const segs = try m.segments() orelse &.{};
+    const segs = try m.segments() orelse @constCast(&.{});
     return segs;
 }
 
