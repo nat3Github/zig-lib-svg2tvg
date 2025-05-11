@@ -1099,7 +1099,7 @@ fn log_seg(segs: []const Segment) void {
 
 pub const make_node_debug = true and debug;
 pub const make_node_debug2 = false and debug;
-const debug = true;
+const debug = false;
 
 test "coverage" {
     _ = .{ tvg_from_svg, renderStream };
