@@ -10,6 +10,12 @@
 - only a small subset of svg is supported
 - related project: https://github.com/nat3Github/zig-lib-icons/tree/main
 
+# api
+- note: api may change in the future
+- tvg_from_svg(...) - convert svg to tvg
+- renderStream(...) - render tvg to an image
+- RenderOptions - Options for rendering
+
 ## usage:
 
 ```zig
