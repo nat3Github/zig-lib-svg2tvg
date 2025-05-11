@@ -94,17 +94,8 @@ pub fn renderStream(
         const segs = try flatten_into_path(arena_alloc, cmd, og_widthf32, og_heightf32);
 
         if (props.fill) |fill| {
-            // const painter = tvg.rendering.Painter{
-            //     .scale_x = scaling_x,
-            //     .scale_y = scaling_y,
-            // };
-
             // if (true) debug_print_seg(seg);
-            std.log.warn("fill", .{});
             if (!opts.disable_fill) {
-                // const ren = tvg.rendering;
-                // ren.renderCommand2(img_shim, header: parsing.Header, color_table: []const tvg.Color, cmd: parsing.DrawCommand, allocator: ?std.mem.Allocator)
-
                 const max_path_len = 512;
                 const temp_buffer_size = 256;
                 var point_store = tvg.rendering.FixedBufferList(Point, temp_buffer_size).init(allocator);
