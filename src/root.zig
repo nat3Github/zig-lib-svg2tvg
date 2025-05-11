@@ -225,6 +225,7 @@ pub const Svg = struct {
         for (att, val) |a, v| {
             try utils.auto_parse_def(@This(), self, Def, a, v);
             if (try utils.parsePointList(alloc, "viewBox", a, v)) |res| {
+                if (res.items.len != 2) return error.ViewBoxMisformed;
                 self.viewBox.x = res.items[0].x;
                 self.viewBox.y = res.items[0].y;
                 self.viewBox.w = res.items[1].x;
@@ -809,8 +810,7 @@ pub fn SvgConverter(W: type) type {
     return struct {
         const Converter = @This();
         const Builder = tvg.builder.Builder(W);
-        arena1: std.heap.ArenaAllocator,
-        arena2: std.heap.ArenaAllocator,
+        arena: std.heap.ArenaAllocator,
         colortable_len: usize = 0,
         colormap: ColMap,
         svg: Svg = Svg{},
@@ -825,13 +825,12 @@ pub fn SvgConverter(W: type) type {
         pub fn init(alloc: Allocator, writer: W) !@This() {
             return @This(){
                 .builder = Builder{ .writer = writer },
-                .arena1 = std.heap.ArenaAllocator.init(alloc),
-                .arena2 = std.heap.ArenaAllocator.init(alloc),
+                .arena = std.heap.ArenaAllocator.init(alloc),
                 .colormap = ColMap.init(alloc),
             };
         }
         pub fn deinit(self: *@This()) @This() {
-            self.arena1.deinit();
+            self.arena.deinit();
             self.arena2.deinit();
             self.colormap.deinit();
         }
@@ -869,11 +868,10 @@ pub fn SvgConverter(W: type) type {
         }
 
         pub fn parse_colors_and_svg(self: *@This(), svg_bytes: []const u8) !void {
-            const alloc = self.arena1.allocator();
             var fbuffs = std.io.fixedBufferStream(svg_bytes);
-            var xml_res = xml.streamingDocument(alloc, fbuffs.reader());
+            var xml_res = xml.streamingDocument(self.arena.child_allocator, fbuffs.reader());
             defer xml_res.deinit();
-            var reader = xml_res.reader(alloc, .{});
+            var reader = xml_res.reader(self.arena.child_allocator, .{});
             defer reader.deinit();
 
             try self.colormap.put(.fromColor(self.default_color.col), math.cast(u32, self.colortable_len) orelse return error.IndexOOB);
@@ -890,20 +888,20 @@ pub fn SvgConverter(W: type) type {
                 };
                 switch (node) {
                     .element_start => {
+                        const garbage_alloc = self.arena.allocator();
                         const element_name = reader.elementNameNs();
                         const element_tag = element_name.local;
-
                         const att_count = reader.reader.attributeCount();
 
                         if (std.mem.eql(u8, "svg", element_tag)) {
-                            const att_names = try alloc.alloc([]const u8, att_count);
-                            const att_vals = try alloc.alloc([]const u8, att_count);
+                            const att_names = try garbage_alloc.alloc([]const u8, att_count);
+                            const att_vals = try garbage_alloc.alloc([]const u8, att_count);
                             for (att_names, att_vals, 0..) |*n, *v, i| {
-                                n.* = try alloc.dupe(u8, reader.attributeNameNs(i).local);
-                                v.* = try alloc.dupe(u8, try reader.attributeValue(i));
+                                n.* = try garbage_alloc.dupe(u8, reader.attributeNameNs(i).local);
+                                v.* = try garbage_alloc.dupe(u8, try reader.attributeValue(i));
                             }
                             var svg = Svg{};
-                            try svg.parse(alloc, att_names, att_vals);
+                            try svg.parse(garbage_alloc, att_names, att_vals);
                             try svg.check();
                             self.svg = svg;
                         }
@@ -923,6 +921,7 @@ pub fn SvgConverter(W: type) type {
                                 }
                             }
                         }
+                        _ = self.arena.reset(.retain_capacity);
                     },
                     else => {},
                     .eof => break,
@@ -938,10 +937,8 @@ pub fn SvgConverter(W: type) type {
 
         pub fn run(self: *@This(), svg_bytes: []const u8) !void {
             try self.parse_colors_and_svg(svg_bytes);
-            _ = self.arena1.reset(.retain_capacity);
-            _ = self.arena2.reset(.retain_capacity);
 
-            const gpa = self.arena1.child_allocator;
+            const gpa = self.arena.child_allocator;
             var fbuffs = std.io.fixedBufferStream(svg_bytes);
             var xml_res = xml.streamingDocument(gpa, fbuffs.reader());
             defer xml_res.deinit();
@@ -951,15 +948,15 @@ pub fn SvgConverter(W: type) type {
             try self.builder.writeHeader(self.svg_width(), self.svg_height(), Scale.@"1/4096", .u8888, Range.enhanced);
 
             const colors_hash = self.colormap.keys();
-            const colors = try self.arena1.allocator().alloc(Color, colors_hash.len);
-            if (debug)
-                std.log.warn("writing colortable: RGBA", .{});
+            const colors = try gpa.alloc(Color, colors_hash.len);
+            defer gpa.free(colors);
+            if (debug) std.log.warn("writing colortable: RGBA", .{});
             for (colors, colors_hash, 0..) |*v, v2, i| {
                 const c = v2.toColor();
                 v.* = c;
-                if (debug)
-                    std.log.warn("- {} | [{d:.1} {d:.1} {d:.1} {d:.1}]", .{ i, c.r, c.g, c.b, c.a });
+                if (debug) std.log.warn("- {} | [{d:.1} {d:.1} {d:.1} {d:.1}]", .{ i, c.r, c.g, c.b, c.a });
             }
+
             try self.builder.writeColorTable(colors);
 
             var stack = try Stack(InheritableProperties).init(gpa, 128);
@@ -1110,6 +1107,7 @@ pub fn SvgConverter(W: type) type {
 
 pub fn tvg_from_svg(alloc: Allocator, writer: anytype, svg_bytes: []const u8) !void {
     var con = try SvgConverter(@TypeOf(writer)).init(alloc, writer);
+    defer con.deinit();
     try con.run(svg_bytes);
 }
 

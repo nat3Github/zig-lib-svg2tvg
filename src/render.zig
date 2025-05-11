@@ -49,33 +49,31 @@ pub fn renderStream(
     reader: anytype,
     opts: Options,
 ) !void {
-    var parser = try parse(allocator, reader);
+    const gpa = allocator;
+    var parser = try parse(gpa, reader);
     defer parser.deinit();
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+
     const color_table = parser.color_table;
     const og_width = parser.header.width;
     const og_height = parser.header.height;
     const og_widthf32: f32 = @floatFromInt(og_width);
     const og_heightf32: f32 = @floatFromInt(og_height);
 
-    const new_width: usize = @intCast(img_shim.width);
-    const new_height: usize = @intCast(img_shim.height);
+    const new_width: usize = math.cast(usize, img_shim.width) orelse return error.SizeOutOfBounds;
+    const new_height: usize = math.cast(usize, img_shim.height) orelse return error.SizeOutOfBounds;
     const new_widthf32: f32 = @floatFromInt(new_width);
     const new_heightf32: f32 = @floatFromInt(new_height);
 
     const scaling_x = new_widthf32 / og_widthf32;
     const scaling_y = new_heightf32 / og_heightf32;
-    const gpa = alloc;
 
     var sfc = try z2d.Surface.initPixel(.{ .rgba = .fromClamped(1, 0, 1, 1) }, gpa, @intCast(new_width), @intCast(new_height));
-    // defer sfc.deinit(allocator);
+    defer sfc.deinit(allocator);
 
-    var ctx = z2d.Context.init(alloc, &sfc);
+    var ctx = z2d.Context.init(gpa, &sfc);
     defer ctx.deinit();
-    const lwdef: f32 = opts.fallback_stroke_width orelse 1.5;
 
+    const lwdef: f32 = opts.fallback_stroke_width orelse 1.5;
     var prop = ShimProp{
         .lwdef = opts.overwrite_stroke_width orelse lwdef,
         .col = .{ 255, 255, 255, 255 },
@@ -87,16 +85,19 @@ pub fn renderStream(
     var shim_stroke = ShimPainter2.init(&ctx, &prop);
     _ = &shim_stroke;
 
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
     while (try parser.next()) |cmd| {
         const props = try get_props(color_table, cmd);
-        const segs = try flatten_into_path(alloc, cmd, og_widthf32, og_heightf32);
+        const segs = try flatten_into_path(arena_alloc, cmd, og_widthf32, og_heightf32);
 
         for (segs) |seg| {
             if (props.fill) |fill| {
                 if (!opts.disable_fill) {
                     prop.setColor(opts.overwrite_fill orelse fill);
                     try shim_fill.moveTo(.from(seg.start));
-                    try z2d_draw_seg(alloc, &shim_fill, seg);
+                    try z2d_draw_seg(arena_alloc, &shim_fill, seg);
                     try shim_fill.ctx.fill();
                 }
             }
@@ -104,26 +105,25 @@ pub fn renderStream(
                 if (opts.use_z2d_for_stroke) {
                     prop.setColor(opts.overwrite_fill orelse stroke);
                     try shim_fill.moveTo(.from(seg.start));
-                    try z2d_draw_seg(alloc, &shim_fill, seg);
+                    try z2d_draw_seg(arena_alloc, &shim_fill, seg);
                     try shim_fill.ctx.stroke();
                 } else {
-                    // std.log.warn("LOG SEG RENDER PATH", .{});
-                    // ut.print_point("start", seg.start);
-                    // for (seg.commands) |n| {
-                    //     ut.print_node(n);
-                    // }
-                    // std.log.warn("LOG RENDER END", .{});
+                    if (false) debug_print_seg(seg);
                     prop.setColor(opts.overwrite_stroke orelse stroke);
                     try shim_stroke.moveTo(.from(seg.start));
-                    try z2d_draw_seg(alloc, &shim_stroke, seg);
+                    try z2d_draw_seg(arena_alloc, &shim_stroke, seg);
                 }
             }
         }
-        // _ = arena.reset(.retain_capacity);
+        _ = arena.reset(.retain_capacity);
     }
+
     for (0..new_height) |y| {
         for (0..new_width) |x| {
-            const pix = sfc.getPixel(@intCast(x), @intCast(y)).?.rgba;
+            const pix = sfc.getPixel(
+                math.cast(i32, x) orelse return error.CastOutOfBounds,
+                math.cast(i32, y) orelse return error.CastOutOfBounds,
+            ).?.rgba;
             const pixc: [4]u8 = .{
                 pix.r,
                 pix.g,
@@ -133,6 +133,14 @@ pub fn renderStream(
             img_shim.setPixel(@intCast(x), @intCast(y), pixc);
         }
     }
+}
+fn debug_print_seg(seg: Segment) void {
+    std.log.warn("LOG SEG RENDER PATH", .{});
+    ut.print_point("start", seg.start);
+    for (seg.commands) |n| {
+        ut.print_node(n);
+    }
+    std.log.warn("LOG RENDER END", .{});
 }
 const ShimProp = struct {
     lwdef: f32,
