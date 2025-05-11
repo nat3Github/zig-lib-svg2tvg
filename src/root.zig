@@ -673,7 +673,6 @@ const SvgPath = struct {
                             // [x, y]
                             if (cmd.values.len % 2 != 0) return error.InvalidValueCount;
                             for (cmd.values, 0..) |_, i| {
-                                std.log.warn("M/L", .{});
                                 if (i % 2 == 0) {
                                     const x = cmd.values[i];
                                     const y = cmd.values[i + 1];
@@ -688,7 +687,6 @@ const SvgPath = struct {
                         .horizontal_line_to, .vertical_line_to => {
                             // [x] or [y]
                             for (cmd.values) |v| {
-                                std.log.warn("H/V", .{});
                                 if (cmd.node_type == .horizontal_line_to) {
                                     try maker.horiz(v, cmd.rel);
                                 } else try maker.vert(v, cmd.rel);
@@ -699,7 +697,6 @@ const SvgPath = struct {
                             if (cmd.values.len % 6 != 0) return error.InvalidValueCount;
                             var i: usize = 0;
                             while (i + 5 < cmd.values.len) : (i += 6) {
-                                std.log.warn("C", .{});
                                 const x1 = cmd.values[i];
                                 const y1 = cmd.values[i + 1];
                                 const x2 = cmd.values[i + 2];
@@ -719,7 +716,6 @@ const SvgPath = struct {
                             if (cmd.values.len % 4 != 0) return error.InvalidValueCount;
                             var i: usize = 0;
                             while (i + 3 < cmd.values.len) : (i += 4) {
-                                std.log.warn("S", .{});
                                 const x2 = cmd.values[i];
                                 const y2 = cmd.values[i + 1];
                                 const x = cmd.values[i + 2];
@@ -736,7 +732,6 @@ const SvgPath = struct {
                             if (cmd.values.len % 4 != 0) return error.InvalidValueCount;
                             var i: usize = 0;
                             while (i + 3 < cmd.values.len) : (i += 4) {
-                                std.log.warn("Q", .{});
                                 const x1 = cmd.values[i];
                                 const y1 = cmd.values[i + 1];
                                 const x = cmd.values[i + 2];
@@ -753,7 +748,6 @@ const SvgPath = struct {
                             if (cmd.values.len % 2 != 0) return error.InvalidValueCount;
                             for (cmd.values, 0..) |_, i| {
                                 if (i % 2 == 0) {
-                                    std.log.warn("T", .{});
                                     const x = cmd.values[i];
                                     const y = cmd.values[i + 1];
                                     try maker.smooth_quadratic_bezier_curve_to(
@@ -768,7 +762,6 @@ const SvgPath = struct {
                             if (cmd.values.len % 7 != 0) return error.InvalidValueCount;
                             var i: usize = 0;
                             while (i + 6 < cmd.values.len) : (i += 7) {
-                                std.log.warn("A", .{});
                                 const rx = cmd.values[i];
                                 const ry = cmd.values[i + 1];
                                 const rotation = cmd.values[i + 2];
@@ -1123,7 +1116,7 @@ pub fn tvg_from_svg(alloc: Allocator, writer: anytype, svg_bytes: []const u8) !v
 
 pub const make_node_debug = true and debug;
 pub const make_node_debug2 = false and debug;
-const debug = true;
+const debug = false;
 
 test "coverage" {
     _ = .{ tvg_from_svg, SvgConverter, renderStream };

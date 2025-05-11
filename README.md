@@ -4,6 +4,7 @@
 - dependency name: svg2tvg, module name: svg2tvg
 
 ## status / background
+
 - this lib is fresh and not battletested
 - the main goal is to convert and render icons
 - the renderer has options to overwrite color and stroke width
@@ -11,6 +12,7 @@
 - related project: https://github.com/nat3Github/zig-lib-icons/tree/main
 
 # api
+
 - note: api may change in the future
 - tvg_from_svg(...) - convert svg to tvg
 - renderStream(...) - render tvg to an image
@@ -61,7 +63,7 @@ test "convert to tvg and render" {
 
 - Chris Marchesi: https://github.com/vancluever/z2d (used to render tvg as image)
 - Ian Johnson: https://github.com/ianprime0509/zig-xml (used for parsing xml)
-- Chris Marchesi: https://github.com/vancluever/zig-svg (as inspiration for svg attribute parsing but currently not in use due to special cases not beeing handled)
+- Chris Marchesi: https://github.com/vancluever/zig-svg (for svg color attribute parsing)
 - https://github.com/TinyVG/sdk/tree/main (used for writing tvg)
 
 ## Licence
