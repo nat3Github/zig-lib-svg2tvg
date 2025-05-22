@@ -4,12 +4,12 @@
     .version = "0.0.0",
     .dependencies = .{
         .xml = .{
-            .url = "git+https://github.com/ianprime0509/zig-xml#c2b02045810108e7a807855dc592157f44d32fb1",
+            .url = "git+https://github.com/ianprime0509/zig-xml#c0bda4f35ea61cfb7845337adfa255c86c67fd13",
             .hash = "xml-0.1.0-ZTbP35VkAgAp2cDlvsPuL7SWVZWwPg-V99LmVRSHbCtL",
         },
         .z2d = .{
-            .url = "git+https://github.com/vancluever/z2d#46b7fd9a147abbbd9603f5546dbdadbd8f50bdaf",
-            .hash = "z2d-0.6.2-j5P_HorvCgA77zuTJyQcBt0addhqcZ77jV4tsuhB5KQY",
+            .url = "git+https://github.com/nat3Github/zig-lib-z2d-dev-fork#e4e23a2f3ba3598c82848bf0f7b3ea80d7ac0cb2",
+            .hash = "z2d-0.6.2-j5P_Hj_6CgADmPGfSOzRwoWRJBS636ZlzEiz7PyN6gdz",
         },
     },
     .paths = .{
