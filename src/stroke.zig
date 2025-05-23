@@ -1,3 +1,4 @@
+/// Alternative Stroking implementation / Alternative to stroking with z2d
 const std = @import("std");
 const root = @import("root.zig");
 const Pixel = root.Pixel;
@@ -54,28 +55,6 @@ pub fn strokeLineSegmentAA(fb: anytype, p0: [2]f32, p1: [2]f32, width: f32, colo
         }
     }
 }
-
-// pub fn strokeLineSegmentAA(fb: anytype, p0: [2]f32, p1: [2]f32, width: f32, color: Color) void {
-//     const hw = width / 2.0;
-//     const extra = 1.5; // extra pixels for soft AA falloff
-
-//     const min_x = @floor(@min(p0[0], p1[0]) - hw - extra);
-//     const max_x = @ceil(@max(p0[0], p1[0]) + hw + extra);
-//     const min_y = @floor(@min(p0[1], p1[1]) - hw - extra);
-//     const max_y = @ceil(@max(p0[1], p1[1]) + hw + extra);
-
-//     var y = min_y;
-//     while (y <= max_y) : (y += 1.0) {
-//         var x = min_x;
-//         while (x <= max_x) : (x += 1.0) {
-//             const dist = pointToSegmentDistance(x + 0.5, y + 0.5, p0[0], p0[1], p1[0], p1[1]);
-//             const alpha = math.clamp(1.0 - (dist - hw), 0.0, 1.0);
-//             if (alpha > 0.0) {
-//                 blendPixel(fb, @intFromFloat(x), @intFromFloat(y), color, alpha);
-//             }
-//         }
-//     }
-// }
 pub fn strokeBezierAA(fb: anytype, p0: [2]f32, p1: [2]f32, p2: [2]f32, p3: [2]f32, width: f32, color: Color) void {
     var prev = p0;
     var t: f32 = 0.0;

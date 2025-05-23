@@ -8,8 +8,8 @@
             .hash = "xml-0.1.0-ZTbP35VkAgAp2cDlvsPuL7SWVZWwPg-V99LmVRSHbCtL",
         },
         .z2d = .{
-            .url = "git+https://github.com/nat3Github/zig-lib-z2d-dev-fork#e4e23a2f3ba3598c82848bf0f7b3ea80d7ac0cb2",
-            .hash = "z2d-0.6.2-j5P_Hj_6CgADmPGfSOzRwoWRJBS636ZlzEiz7PyN6gdz",
+            .url = "git+https://github.com/nat3Github/zig-lib-z2d-dev-fork#e21dd0e1b051b21d9b915651023790034c9f6247",
+            .hash = "z2d-0.6.3-pre-j5P_Hpr7CgDs92sCmKFFCBMASENBhbn0klrHEAJL_uDV",
         },
     },
     .paths = .{

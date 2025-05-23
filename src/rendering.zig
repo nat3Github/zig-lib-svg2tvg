@@ -1,6 +1,5 @@
 const std = @import("std");
 const assert = std.debug.assert;
-const expect = std.debug.expect;
 const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
 const math = std.math;
@@ -10,8 +9,8 @@ const ut = @import("util.zig");
 const tvg = root.tvg;
 const z2d = @import("z2d");
 const ldrw = @import("stroke.zig");
+const Svg = root.conversion.Svg;
 
-const Svg = root.Svg;
 const DrawCommand = tvg.parsing.DrawCommand;
 const Style = tvg.Style;
 const Rectangle = tvg.Rectangle;
@@ -25,6 +24,8 @@ const Point = tvg.Point;
 const Scale = tvg.Scale;
 const Range = tvg.Range;
 const parse = tvg.parse;
+
+const debug_painter = true;
 
 const Shim = struct {
     pub fn setPixels(_: isize, _: isize, _: [4]u8) void {}
@@ -94,6 +95,7 @@ pub fn renderStream(
         const segs = try flatten_into_path(arena_alloc, cmd, og_widthf32, og_heightf32);
 
         if (props.fill) |fill| {
+            if (debug_painter) std.log.warn("FILL", .{});
             // if (true) debug_print_seg(seg);
             if (!opts.disable_fill) {
                 const max_path_len = 512;
@@ -129,7 +131,9 @@ pub fn renderStream(
             }
         }
         if (props.stroke) |stroke| {
+            if (debug_painter) std.log.warn("STROKE", .{});
             for (segs) |seg| {
+                // debug_print_seg(seg);
                 if (opts.use_z2d_for_stroke) {
                     shim_fill.mode_fill = false;
                     prop.setColor(opts.overwrite_fill orelse stroke);
@@ -291,22 +295,32 @@ pub const ShimPainter = struct {
                     try self.ctx.closePath();
                     self.closed = true;
                 }
+                if (debug_painter) std.log.warn("painter1: Fill", .{});
                 try self.ctx.fill();
             } else try self.ctx.stroke();
         }
+        self.ctx.resetPath();
     }
     fn close(self: *@This()) !void {
         self.closed = true;
         const ctx = self.ctx;
+        if (debug_painter) std.log.warn("painter1: ClosePath", .{});
         try ctx.closePath();
         // try self.flush();
     }
     fn moveTo(self: *@This(), p: Vec2) !void {
         const ctx = self.ctx;
+        self.ctx.setSourceToPixel(.{ .rgba = z2d.pixel.RGBA.fromClamped(
+            norm(self.prop.col[0]),
+            norm(self.prop.col[1]),
+            norm(self.prop.col[2]),
+            norm(self.prop.col[3]),
+        ) });
         // try self.flush();
         self.closed = false;
         self.flushed = false;
         const pt = self.prop.tranform(p);
+        if (debug_painter) std.log.warn("painter1: MoveTo {d:.2}, {d:.2}", .{ pt.x, pt.y });
         try ctx.moveTo(pt.x, pt.y);
         self.ctx.setLineCapMode(.round);
         self.ctx.setLineJoinMode(.round);
@@ -314,8 +328,10 @@ pub const ShimPainter = struct {
     fn lineTo(self: *@This(), p: Vec2, lw: ?f32) !void {
         const ctx = self.ctx;
         var pt = self.prop.tranform(p);
-        pt.x -= 0.01; // NOTE: workaround for z2d bug
+        pt.x += 0.0;
+        // pt.x -= 0.01; // NOTE: workaround for z2d bug
         self.ctx.setLineWidth(self.prop.getlw(lw));
+        if (debug_painter) std.log.warn("painter1: LineTo {d:.2}, {d:.2}", .{ pt.x, pt.y });
         try ctx.lineTo(pt.x, pt.y);
     }
     fn bezier(self: *@This(), c0: Vec2, c1: Vec2, end: Vec2, lw: ?f32) !void {
@@ -323,6 +339,17 @@ pub const ShimPainter = struct {
         const c0t = self.prop.tranform(c0);
         const c1t = self.prop.tranform(c1);
         const endt = self.prop.tranform(end);
+        // if (debug_painter) std.log.warn("painter1: Bezier To {d:.2}, {d:.2}", .{ endt.x, endt.y });
+        if (debug_painter) std.log.warn(
+            \\try self.ctx.curveTo(
+            \\   {d:.2},
+            \\   {d:.2},
+            \\   {d:.2},
+            \\   {d:.2},
+            \\   {d:.2},
+            \\   {d:.2},
+            \\);
+        , .{ c0t.x, c0t.y, c1t.x, c1t.y, endt.x, endt.y });
         try self.ctx.curveTo(
             c0t.x,
             c0t.y,
@@ -435,6 +462,7 @@ pub fn get_style(cmd: DrawCommand) Style {
     };
 }
 pub fn get_props(colors: []Color, cmd: DrawCommand) !FillProperties {
+    if (debug_painter) std.log.warn("draw command: {}", .{cmd});
     return switch (cmd) {
         .fill_path => |a| FillProperties{ .fill = try get_color(colors, a.style) },
         .fill_polygon => |a| FillProperties{ .fill = try get_color(colors, a.style) },

@@ -1,3 +1,4 @@
+const root = @import("root.zig");
 const std = @import("std");
 
 pub const NodeType = enum {
@@ -113,3 +114,54 @@ fn map_command_to_node(c: u8) !NodeType {
         else => error.UnknownCommand,
     };
 }
+
+pub const SvgColorAttribute = enum {
+    none,
+    inherit,
+    currentColor,
+};
+pub const svg_parsing = @import("svg-vancluever.zig");
+pub const Color = root.tvg.Color;
+pub const SvgColorTag = enum {
+    att,
+    col,
+};
+/// TODO: Svg Color inheritance handling of overriding values inside containers
+/// (Stack) -> Color Resolving
+pub const SvgColor = union(SvgColorTag) {
+    att: SvgColorAttribute,
+    col: Color,
+    pub const none: SvgColor = .{ .att = .none };
+    pub const inherit: SvgColor = .{ .att = .inherit };
+    pub const currentColor: SvgColor = .{ .att = .currentColor };
+
+    pub fn parseColor(val: []const u8) SvgColor {
+        const trimmed = std.mem.trim(u8, val, " ");
+        if (std.mem.eql(u8, trimmed, "none")) {
+            return none;
+        }
+        if (std.mem.eql(u8, trimmed, "inherit")) {
+            return inherit;
+        }
+        if (std.mem.eql(u8, trimmed, "currentColor")) {
+            return currentColor;
+        }
+        const parsed = svg_parsing.Color.parse(val).color;
+        const hex_col = SvgColor{
+            .col = Color_from(parsed, 1.0),
+        };
+        return hex_col;
+    }
+    fn normalize_u8(u: u8) f32 {
+        const x: f32 = @floatFromInt(u);
+        return x / 255.0;
+    }
+    fn Color_from(col: svg_parsing.Color, alpha_normalized: f32) Color {
+        return Color{
+            .r = normalize_u8(col.r),
+            .g = normalize_u8(col.g),
+            .b = normalize_u8(col.b),
+            .a = std.math.clamp(alpha_normalized, 0, 1),
+        };
+    }
+};

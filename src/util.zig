@@ -4,12 +4,10 @@ const expect = std.debug.expect;
 const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
 const math = std.math;
-const root = @import("root.zig");
 
-const svg_parsing = @import("svg.zig");
-const xml = @import("xml");
-const icons = @import("icons");
+const root = @import("root.zig");
 const tvg = root.tvg;
+const Svg = root.conversion.Svg;
 
 const Color = tvg.Color;
 const Path = tvg.Path;
@@ -21,9 +19,10 @@ const Scale = tvg.Scale;
 const Range = tvg.Range;
 const Style = tvg.Style;
 
-const SvgColor = root.SvgColor;
-const make_node_debug2 = root.make_node_debug2;
-const make_node_debug = root.make_node_debug;
+const SvgColor = root.svg_ut.SvgColor;
+
+const make_node_debug2 = false;
+const make_node_debug = false;
 
 pub const Image = @import("image");
 pub const ImageWrapper = struct {
@@ -41,6 +40,7 @@ pub fn Stack(T: type) type {
     return struct {
         data: []T,
         posplus1: usize = 0,
+        const This = @This();
         pub fn init(alloc: Allocator, size: usize, def: T) !@This() {
             const data = try alloc.alloc(T, size);
             for (data) |*d| d.* = def;
@@ -68,15 +68,21 @@ pub fn Stack(T: type) type {
             if (self.posplus1 == 0) return null;
             return &self.data[self.posplus1 - 1];
         }
-        pub fn top_index(self: *const @This()) ?usize {
-            if (self.posplus1 == 0) return null;
-            return self.posplus1 - 1;
-        }
-        pub fn get(self: *const @This(), idx: usize) !T {
-            if (self.posplus1 == 0) return error.Empty;
-            const idx_real = idx - 1;
-            if (idx_real > self.posplus1) return error.AccessOutOfBounds;
-            return self.data[idx_real];
+        const Iter = struct {
+            ref: *const This,
+            idx: ?usize,
+            pub fn next(self: *@This()) ?T {
+                if (self.idx == null) return null;
+                const nxt = self.ref.data[self.idx.?];
+                if (self.idx.? == 0) self.idx = null else self.idx = self.idx.? - 1;
+                return nxt;
+            }
+        };
+        pub fn rev_iter(self: *const This) Iter {
+            return Iter{
+                .ref = self,
+                .idx = self.posplus1 - 1,
+            };
         }
     };
 }
@@ -148,15 +154,6 @@ pub const utils = struct {
             }
         }
     }
-    pub fn toPoint(cord: svg_parsing.CoordinatePair) Point {
-        return Point{
-            .x = fromNumber(cord.coordinates[0].number),
-            .y = fromNumber(cord.coordinates[1].number),
-        };
-    }
-    pub fn fromNumber(number: svg_parsing.Number) f32 {
-        return @floatCast(number.value);
-    }
 };
 
 pub const NodeMaker = struct {
@@ -171,7 +168,7 @@ pub const NodeMaker = struct {
 
     pub fn init(
         alloc: Allocator,
-        svg: root.Svg,
+        svg: Svg,
     ) NodeMaker {
         const m = make_node.init(svg);
         return NodeMaker{
@@ -275,7 +272,7 @@ pub const make_node = struct {
     last_control: ?Point = null,
     first: Point = Point{ .x = 0, .y = 0 },
     cur: Point = Point{ .x = 0, .y = 0 },
-    vw: root.Svg,
+    vw: Svg,
     fn set_last_control(self: *make_node, p: Point) void {
         self.last_control = p;
     }
@@ -298,7 +295,7 @@ pub const make_node = struct {
         self.cur = Point{ .x = 0, .y = 0 };
     }
 
-    pub fn init(vw: root.Svg) make_node {
+    pub fn init(vw: Svg) make_node {
         return make_node{
             .last_control = null,
             .vw = vw,
@@ -464,6 +461,10 @@ pub const ColorHash = struct {
             .b = @as(f32, @floatFromInt(self.b)) / 255.0,
             .a = @as(f32, @floatFromInt(self.a)) / 255.0,
         };
+    }
+    pub fn get_hash_key(self: *const SvgColor) ?ColorHash {
+        if (self.* == .att) return null;
+        return ColorHash.fromColor(self.col);
     }
 };
 
