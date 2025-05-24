@@ -560,7 +560,6 @@ pub fn renderPath(
 
                         try point_store.append(Point{ .x = x, .y = y }, lerp(last_width, new_width, f));
                     }
-
                     try point_store.append(bezier.data.p1, new_width);
                 },
                 .quadratic_bezier => |bezier| {

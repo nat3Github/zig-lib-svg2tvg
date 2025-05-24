@@ -25,7 +25,7 @@ const Scale = tvg.Scale;
 const Range = tvg.Range;
 const parse = tvg.parse;
 
-const debug_painter = true;
+const debug_painter = false;
 
 const Shim = struct {
     pub fn setPixels(_: isize, _: isize, _: [4]u8) void {}
@@ -121,8 +121,8 @@ pub fn renderStream(
                 for (point_list) |list| {
                     if (list.len > 3) {
                         try shim_fill.moveTo(.from(list[0]));
-                        for (list[0 .. list.len - 1]) |p| {
-                            try shim_fill.lineTo(.from(p), 2);
+                        for (list[0..list.len]) |p| {
+                            try shim_fill.lineTo(.from(p), 0);
                         }
                         try shim_fill.close();
                     }
