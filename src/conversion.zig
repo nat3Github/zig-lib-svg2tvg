@@ -182,11 +182,13 @@ pub const Svg = struct {
         }
     }
     pub fn check(self: *@This()) !void {
-        if (self.width == null or self.height == null) return error.NoWidthHeightDefined;
+        if (self.width == null) self.width = self.viewBox.w;
+        if (self.height == null) self.height = self.viewBox.h;
         if (self.viewBox.h == null or self.viewBox.w == null) {
-            self.viewBox.h = self.height;
             self.viewBox.w = self.width;
+            self.viewBox.h = self.height;
         }
+        if (self.width == null or self.height == null) return error.NoWidthHeightDefined;
     }
     pub fn transform(self: *const @This(), pp: Point) Point {
         const p = Point{

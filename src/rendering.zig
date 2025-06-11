@@ -100,10 +100,8 @@ pub fn renderStream(
             if (!opts.disable_fill) {
                 const max_path_len = 512;
                 const temp_buffer_size = 256;
-                var point_store = tvg.rendering.FixedBufferList(Point, temp_buffer_size).init(allocator);
-                defer point_store.deinit();
-                var slice_store = tvg.rendering.FixedBufferList(tvg.rendering.IndexSlice, temp_buffer_size).init(allocator);
-                defer slice_store.deinit();
+                var point_store = tvg.rendering.FixedBufferList(Point, temp_buffer_size).init(arena_alloc);
+                var slice_store = tvg.rendering.FixedBufferList(tvg.rendering.IndexSlice, temp_buffer_size).init(arena_alloc);
 
                 try tvg.rendering.renderPath(&point_store, null, &slice_store, Path{ .segments = segs }, 0.0);
 
