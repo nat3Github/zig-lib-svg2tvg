@@ -5,15 +5,14 @@
 
 ## status / background
 
-- this lib is fresh and not battletested
 - the main goal is to convert and render icons
 - the renderer has options to overwrite color and stroke width
 - only a small subset of svg is supported
-- related project: https://github.com/nat3Github/zig-lib-icons/tree/main
+- related project: [zig-lib-icons](https://github.com/nat3Github/zig-lib-icons/tree/main)
+- as of now used in the [dvui](https://github.com/david-vanderson/dvui) project to render icons
 
 # api
 
-- note: api may change in the future
 - tvg_from_svg(...) - convert svg to tvg
 - renderStream(...) - render tvg to an image
 - RenderOptions - Options for rendering
