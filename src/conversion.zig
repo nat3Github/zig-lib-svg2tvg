@@ -929,7 +929,7 @@ pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]con
                         if (try maker.segments()) |segs| {
                             try write_path(&popts, garbage_alloc, &builder, segs, &stack);
                             if (debug) log_seg(segs);
-                        } else std.debug.print("no segments", .{});
+                        } else std.log.debug("no segments", .{});
                     } else {
                         std.log.warn("unrecognized element: {s}", .{element_tag});
                     }
