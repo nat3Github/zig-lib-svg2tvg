@@ -134,10 +134,10 @@ pub fn renderStream(
                 // debug_print_seg(seg);
                 if (opts.use_z2d_for_stroke) {
                     shim_fill.mode_fill = false;
-                    prop.setColor(opts.overwrite_fill orelse stroke);
+                    prop.setColor(opts.overwrite_stroke orelse stroke);
                     try shim_fill.moveTo(.from(seg.start));
                     try z2d_draw_seg(arena_alloc, &shim_fill, seg);
-                    try shim_fill.ctx.stroke();
+                    try shim_fill.flush();
                 } else {
                     prop.setColor(opts.overwrite_stroke orelse stroke);
                     try shim_stroke.moveTo(.from(seg.start));
