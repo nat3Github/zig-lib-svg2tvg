@@ -802,6 +802,7 @@ pub fn parse_colors_and_svg(popts: *const @This(), gpa: Allocator, svg_bytes: []
 pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]const u8 {
     var popts = opts;
     const colors, const svg = try parse_colors_and_svg(&popts, gpa, svg_bytes);
+    defer gpa.free(colors);
     popts.color_table = colors;
     var writer = std.ArrayList(u8).init(gpa);
     defer writer.deinit();
