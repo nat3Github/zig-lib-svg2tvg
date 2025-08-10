@@ -815,8 +815,8 @@ pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]con
     var reader = xml_res.reader(gpa, .{});
     defer reader.deinit();
 
-    const sw: u32 = @intFromFloat(svg.width.?);
-    const sh: u32 = @intFromFloat(svg.height.?);
+    const sw: u32 = @intFromFloat(@round(svg.width.?));
+    const sh: u32 = @intFromFloat(@round(svg.height.?));
     try builder.writeHeader(sw, sh, Scale.@"1/4096", .u8888, Range.enhanced);
 
     try builder.writeColorTable(colors);
