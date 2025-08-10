@@ -27,6 +27,7 @@ pub fn parse_path_data(allocator: std.mem.Allocator, d: []const u8) ![]Command {
     var tokens = std.ArrayList([]const u8).init(allocator);
     while (it.next()) |token| {
         // std.log.warn("token: {s}", .{token});
+        var scientific: bool = false;
         var start: usize = 0;
         var dot: bool = false;
         var i: usize = 0;
@@ -40,14 +41,17 @@ pub fn parse_path_data(allocator: std.mem.Allocator, d: []const u8) ![]Command {
                     }
                 } else dot = true;
             }
-            if (c == '-' or c == '+') {
+            if (!scientific and c == '-' or c == '+') {
                 if (start != i) {
                     try tokens.append(token[start..i]);
                     dot = false;
                     start = i;
                 }
             }
-            if (std.ascii.isAlphabetic(c)) {
+            if (c == 'e') {
+                scientific = true;
+            }
+            else if (std.ascii.isAlphabetic(c)) {
                 if (start != i) {
                     try tokens.append(token[start..i]);
                 }
