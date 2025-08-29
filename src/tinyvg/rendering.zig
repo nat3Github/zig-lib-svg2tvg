@@ -1185,12 +1185,12 @@ pub fn FixedBufferList(comptime T: type, comptime N: usize) type {
 
         buffer: [N]T = undefined,
         count: usize = 0,
-        large: ?std.ArrayList(T),
+        large: ?std.array_list.Managed(T),
 
         pub fn init(allocator: ?std.mem.Allocator) Self {
             return Self{
                 .large = if (allocator) |allo|
-                    std.ArrayList(T).init(allo)
+                    std.array_list.Managed(T).init(allo)
                 else
                     null,
             };

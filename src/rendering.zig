@@ -615,7 +615,7 @@ pub fn arcToCubics(
     large_arc: bool,
     sweep: bool,
 ) ![]const [4]Vec2 {
-    var out = std.ArrayList([4]Vec2).init(allocator);
+    var out = std.array_list.Managed([4]Vec2).init(allocator);
     var rx = irx;
     var ry = iry;
 
