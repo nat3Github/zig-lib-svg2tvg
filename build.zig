@@ -48,8 +48,6 @@ pub fn build(b: *std.Build) void {
 
     const tests = b.addRunArtifact(b.addTest(.{
         .root_module = this_module,
-        .target = target,
-        .optimize = .Debug,
     }));
     b.step("test", "Run unit tests").dependOn(&tests.step);
 }
