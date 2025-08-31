@@ -804,7 +804,7 @@ pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]con
     const colors, const svg = try parse_colors_and_svg(&popts, gpa, svg_bytes);
     defer gpa.free(colors);
     popts.color_table = colors;
-    var writer = std.ArrayList(u8).init(gpa);
+    var writer = std.array_list.Managed(u8).init(gpa);
     defer writer.deinit();
 
     var builder = tvg.builder.create(writer.writer());

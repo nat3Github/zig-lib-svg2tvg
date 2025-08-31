@@ -113,9 +113,9 @@ pub const utils = struct {
         }
         return null;
     }
-    pub fn parsePointList(alloc: Allocator, property_name: []const u8, att: []const u8, val: []const u8) !?std.ArrayList(Point) {
+    pub fn parsePointList(alloc: Allocator, property_name: []const u8, att: []const u8, val: []const u8) !?std.array_list.Managed(Point) {
         if (std.mem.eql(u8, property_name, att)) {
-            var list = std.ArrayList(Point).init(alloc);
+            var list = std.array_list.Managed(Point).init(alloc);
             var split = std.mem.splitAny(u8, val, " ,");
             var point = Point{ .x = 0, .y = 0 };
             var k: bool = true;
@@ -158,9 +158,9 @@ pub const utils = struct {
 
 pub const NodeMaker = struct {
     m: make_node,
-    cmds: std.ArrayList(Node),
-    seg: std.ArrayList(Segment),
-    iseg: std.ArrayList(IndexSegment),
+    cmds: std.array_list.Managed(Node),
+    seg: std.array_list.Managed(Segment),
+    iseg: std.array_list.Managed(IndexSegment),
     cmds_len: usize = 0,
     seg_len: usize = 0,
     flushed: bool = true,
@@ -173,9 +173,9 @@ pub const NodeMaker = struct {
         const m = make_node.init(svg);
         return NodeMaker{
             .m = m,
-            .cmds = std.ArrayList(Node).init(alloc),
-            .seg = std.ArrayList(Segment).init(alloc),
-            .iseg = std.ArrayList(IndexSegment).init(alloc),
+            .cmds = std.array_list.Managed(Node).init(alloc),
+            .seg = std.array_list.Managed(Segment).init(alloc),
+            .iseg = std.array_list.Managed(IndexSegment).init(alloc),
         };
     }
     const IndexSegment = struct {

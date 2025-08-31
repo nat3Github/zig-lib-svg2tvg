@@ -21,10 +21,10 @@ pub const Command = struct {
 };
 
 pub fn parse_path_data(allocator: std.mem.Allocator, d: []const u8) ![]Command {
-    var commands = std.ArrayList(Command).init(allocator);
+    var commands = std.array_list.Managed(Command).init(allocator);
     var it = std.mem.tokenizeAny(u8, d, " ,\t\n\r");
 
-    var tokens = std.ArrayList([]const u8).init(allocator);
+    var tokens = std.array_list.Managed([]const u8).init(allocator);
     while (it.next()) |token| {
         // std.log.warn("token: {s}", .{token});
         var scientific: bool = false;
@@ -50,8 +50,7 @@ pub fn parse_path_data(allocator: std.mem.Allocator, d: []const u8) ![]Command {
             }
             if (c == 'e') {
                 scientific = true;
-            }
-            else if (std.ascii.isAlphabetic(c)) {
+            } else if (std.ascii.isAlphabetic(c)) {
                 if (start != i) {
                     try tokens.append(token[start..i]);
                 }
@@ -69,7 +68,7 @@ pub fn parse_path_data(allocator: std.mem.Allocator, d: []const u8) ![]Command {
     var current_cmd: ?u8 = null;
     var is_relative: bool = false;
 
-    var values = std.ArrayList(f32).init(allocator);
+    var values = std.array_list.Managed(f32).init(allocator);
     var grabbing = false;
     for (tokens.items) |token| {
         if (std.ascii.isAlphabetic(token[0])) {
@@ -83,7 +82,7 @@ pub fn parse_path_data(allocator: std.mem.Allocator, d: []const u8) ![]Command {
                     .rel = is_relative,
                     .values = try allocator.dupe(f32, values.items),
                 });
-                values = std.ArrayList(f32).init(allocator);
+                values = std.array_list.Managed(f32).init(allocator);
                 current_cmd = token[0];
                 is_relative = std.ascii.isLower(current_cmd.?);
             }

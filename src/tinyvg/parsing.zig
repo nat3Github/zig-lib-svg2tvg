@@ -100,7 +100,7 @@ pub fn Parser(comptime Reader: type) type {
 
         reader: Reader,
         allocator: std.mem.Allocator,
-        temp_buffer: std.ArrayListAligned(u8, 16),
+        temp_buffer: std.array_list.AlignedManaged(u8, .@"16"),
         end_of_document: bool = false,
 
         header: Header,
@@ -117,7 +117,7 @@ pub fn Parser(comptime Reader: type) type {
             var self = Self{
                 .allocator = allocator,
                 .reader = reader,
-                .temp_buffer = std.ArrayListAligned(u8, 16).init(allocator),
+                .temp_buffer = std.array_list.AlignedManaged(u8, .@"16").init(allocator),
 
                 .header = undefined,
                 .color_table = undefined,
