@@ -31,8 +31,8 @@ pub const text = @import("text.zig");
 /// Returns a stream of TinyVG commands as well as the document header.
 /// - `allocator` is used to allocate temporary data like the current set of vertices for *FillPolygon*. This can be a fixed-buffer allocator.
 /// - `reader` is a generic stream that provides the TinyVG byte data.
-pub fn parse(allocator: std.mem.Allocator, reader: *std.Io.Reader) !parsing.Parser() {
-    return try parsing.Parser().init(allocator, reader);
+pub fn parse(allocator: std.mem.Allocator, reader: anytype) !parsing.Parser(@TypeOf(reader)) {
+    return try parsing.Parser(@TypeOf(reader)).init(allocator, reader);
 }
 
 pub fn renderStream(
