@@ -19,7 +19,7 @@ fn update_step(step: *std.Build.Step, _: std.Build.Step.MakeOptions) !void {
             .branch = "main",
         },
     };
-    try update.update_dependency(step.owner.allocator, deps);
+    try update.update_dependency(step.owner.allocator, step.owner.graph.io, deps);
 }
 
 pub fn build(b: *std.Build) void {
