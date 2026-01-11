@@ -301,7 +301,8 @@ pub fn Parser() type {
             if (self.end_of_document)
                 return null;
             const command_byte = try self.reader.takeByte();
-            const primary_style_type = std.meta.intToEnum(tvg.StyleType, @as(u2, @truncate(command_byte >> 6))) catch return error.InvalidData;
+            const primary_style_type = std.enums.fromInt(tvg.StyleType, @as(u2, @truncate(command_byte >> 6))) orelse return error.InvalidData;
+
             const command: tvg.Command = @enumFromInt(@as(u6, @truncate(command_byte)));
 
             return switch (command) {
