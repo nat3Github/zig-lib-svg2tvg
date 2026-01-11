@@ -427,9 +427,9 @@ const ReducedCount = enum(u6) {
 
 test "encode app_menu (default range, scale 1/256)" {
     var buffer: [1024]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
+    const fixed: std.Io.Writer = .fixed(&buffer);
 
-    var writer = create(stream.writer());
+    var writer: Builder(std.Io.Writer) = create(fixed);
     try writer.writeHeader(48, 48, .@"1/256", .u8888, .default);
     try writer.writeColorTable(&[_]tvg.Color{
         try tvg.Color.fromString("000000"),
@@ -444,9 +444,9 @@ test "encode app_menu (default range, scale 1/256)" {
 
 test "encode workspace (default range, scale 1/256)" {
     var buffer: [1024]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
+    const fixed: std.Io.Writer = .fixed(&buffer);
 
-    var writer = create(stream.writer());
+    var writer: Builder(std.Io.Writer) = create(fixed);
     try writer.writeHeader(48, 48, .@"1/256", .u8888, .default);
     try writer.writeColorTable(&[_]tvg.Color{
         try tvg.Color.fromString("008751"),
@@ -464,9 +464,9 @@ test "encode workspace_add (default range, scale 1/256)" {
     const Node = tvg.Path.Node;
 
     var buffer: [1024]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
+    const fixed: std.Io.Writer = .fixed(&buffer);
 
-    var writer = create(stream.writer());
+    var writer: Builder(std.Io.Writer) = create(fixed);
     try writer.writeHeader(48, 48, .@"1/256", .u8888, .default);
     try writer.writeColorTable(&[_]tvg.Color{
         try tvg.Color.fromString("008751"),
@@ -503,9 +503,9 @@ test "encode arc_variants (default range, scale 1/256)" {
     const Node = tvg.Path.Node;
 
     var buffer: [1024]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buffer);
+    const fixed: std.Io.Writer = .fixed(&buffer);
 
-    var writer = create(stream.writer());
+    var writer: Builder(std.Io.Writer) = create(fixed);
     try writer.writeHeader(92, 92, .@"1/256", .u8888, .default);
     try writer.writeColorTable(&[_]tvg.Color{
         try tvg.Color.fromString("40ff00"),
