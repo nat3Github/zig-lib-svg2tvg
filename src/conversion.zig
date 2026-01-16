@@ -709,14 +709,14 @@ pub fn write_path(
             for (seg.commands, node_dup) |n, *nd| {
                 nd.* = n;
                 switch (n) {
-                    .line => |_| nd.line.line_width = stroke_width,
-                    .horiz => |_| nd.horiz.line_width = stroke_width,
-                    .vert => |_| nd.vert.line_width = stroke_width,
-                    .bezier => |_| nd.bezier.line_width = stroke_width,
-                    .arc_circle => |_| nd.arc_circle.line_width = stroke_width,
-                    .arc_ellipse => |_| nd.arc_ellipse.line_width = stroke_width,
-                    .close => |_| nd.close.line_width = stroke_width,
-                    .quadratic_bezier => |_| nd.quadratic_bezier.line_width = stroke_width,
+                    .line => nd.line.line_width = stroke_width,
+                    .horiz => nd.horiz.line_width = stroke_width,
+                    .vert => nd.vert.line_width = stroke_width,
+                    .bezier => nd.bezier.line_width = stroke_width,
+                    .arc_circle => nd.arc_circle.line_width = stroke_width,
+                    .arc_ellipse => nd.arc_ellipse.line_width = stroke_width,
+                    .close => nd.close.line_width = stroke_width,
+                    .quadratic_bezier => nd.quadratic_bezier.line_width = stroke_width,
                 }
             }
             seg.commands = node_dup;

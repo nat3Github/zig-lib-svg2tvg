@@ -363,7 +363,7 @@ pub fn z2d_draw_seg(alloc: Allocator, ctx: anytype, seg: Segment) !void {
     var p = seg.start;
     for (seg.commands) |cm| {
         switch (cm) {
-            .close => |_| {
+            .close => {
                 try ctx.close();
             },
             .line => |a| {
