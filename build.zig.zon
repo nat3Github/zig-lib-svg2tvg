@@ -8,8 +8,8 @@
             .hash = "xml-0.2.0-ZTbP3wE6AgCsnyZut_plzxi6WB2tzzh3kFRBOp3AL7n9",
         },
         .z2d = .{
-            .url = "git+https://github.com/david-vanderson/z2d#e44186240b9b014706aaa6f643ebfd3941dd5d8b",
-            .hash = "z2d-0.9.1-pre-j5P_HqpmFgDKImTApbtan5FGe9O6ydUhcKMQrTFHGJgF",
+            .url = "git+https://github.com/andrewrk/z2d#920803b15d04534f3073f6a0d619b296f8bad9db",
+            .hash = "z2d-0.9.1-pre-j5P_Hq1mFgDDtn1HtGR816GePKmpe-dODMX6PhGsTbf8",
         },
     },
     .paths = .{
