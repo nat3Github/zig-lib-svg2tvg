@@ -1,4 +1,5 @@
 .direnv
 zig-out
 .zig-cache
+/zig-pkg
 test
