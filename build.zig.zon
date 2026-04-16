@@ -2,7 +2,7 @@
     .name = .svg2tvg,
     .fingerprint = 0x15ec8a64b919931e,
     .version = "0.0.0",
-    .minimum_zig_version = "0.16.0-dev.3061+9b1eaad13",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .xml = .{
             .url = "git+https://github.com/ianprime0509/zig-xml#8874de5b846f4e3e806a062cd11a01b2bb90fc7a",

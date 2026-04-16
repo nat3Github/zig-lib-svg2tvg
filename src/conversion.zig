@@ -737,10 +737,10 @@ pub fn parse_colors_and_svg(popts: *const @This(), gpa: Allocator, svg_bytes: []
     defer readerImpl.deinit();
     var reader = &readerImpl.interface;
 
-    var colormap = ColMap.init(alloc);
+    var colormap: ColMap = .empty;
 
     var colortable_len: u32 = 0;
-    try colormap.put(.fromColor(popts.default_color.col), colortable_len);
+    try colormap.put(alloc, .fromColor(popts.default_color.col), colortable_len);
     colortable_len += 1;
     var svg = Svg{};
 
@@ -777,7 +777,7 @@ pub fn parse_colors_and_svg(popts: *const @This(), gpa: Allocator, svg_bytes: []
                             const maybe_key = ColorHash.get_hash_key(&col);
                             if (maybe_key) |key| {
                                 if (colormap.getKey(key) == null) {
-                                    try colormap.put(key, colortable_len);
+                                    try colormap.put(alloc, key, colortable_len);
                                     colortable_len += 1;
                                 }
                             }
