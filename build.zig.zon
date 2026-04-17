@@ -10,7 +10,7 @@
         },
         .z2d = .{
             .url = "git+https://github.com/david-vanderson/z2d#ac63a6ff54b8e020c6d17ef99686f71cf2e1573d",
-            .hash = "z2d-0.9.1-pre-j5P_HolnFgB4Mp4Zlyt6WereHlk2fh1iEJHtRIwAMIfy",
+            .hash = "z2d-0.11.0-j5P_Hgz1DwCfSthAxqu9Vu-4GmrlZ0SQjUHtAZ_ajRxq",
         },
     },
     .paths = .{
