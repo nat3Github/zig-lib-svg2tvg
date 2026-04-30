@@ -9,8 +9,8 @@
             .hash = "xml-0.2.0-ZTbP3yI6AgB9Rpd2hQrueO63ib0Bm6mQiL_WB1t7JAmP",
         },
         .z2d = .{
-            .url = "git+https://github.com/david-vanderson/z2d#ac63a6ff54b8e020c6d17ef99686f71cf2e1573d",
-            .hash = "z2d-0.11.0-j5P_Hgz1DwCfSthAxqu9Vu-4GmrlZ0SQjUHtAZ_ajRxq",
+            .url = "git+https://github.com/vancluever/z2d#2f661fb5120f65e875bf6f37d082674c08858c7b",
+            .hash = "z2d-0.11.1-pre-j5P_HtbzDwADWjqO2TdR36XPyD-GdJRwRywnnhjalqej",
         },
     },
     .paths = .{

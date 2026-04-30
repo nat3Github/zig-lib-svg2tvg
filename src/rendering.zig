@@ -43,6 +43,7 @@ pub const Options = struct {
 };
 
 pub fn renderStream(
+    io: std.Io,
     allocator: std.mem.Allocator,
     /// A struct that exports a single function `setPixel(x: isize, y: isize, color: [4]u8) void` as well as two fields width and height
     img_shim: anytype,
@@ -71,7 +72,7 @@ pub fn renderStream(
     var sfc = try z2d.Surface.initPixel(.{ .rgba = .fromClamped(1, 0, 1, 0) }, gpa, @intCast(new_width), @intCast(new_height));
     defer sfc.deinit(allocator);
 
-    var ctx = z2d.Context.init(gpa, &sfc);
+    var ctx = z2d.Context.init(io, gpa, &sfc);
     defer ctx.deinit();
 
     const lwdef: f32 = opts.fallback_stroke_width orelse 1;
