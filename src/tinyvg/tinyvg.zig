@@ -31,8 +31,8 @@ pub const text = @import("text.zig");
 /// Returns a stream of TinyVG commands as well as the document header.
 /// - `allocator` is used to allocate temporary data like the current set of vertices for *FillPolygon*. This can be a fixed-buffer allocator.
 /// - `reader` is a generic stream that provides the TinyVG byte data.
-pub fn parse(allocator: std.mem.Allocator, reader: anytype) !parsing.Parser(@TypeOf(reader)) {
-    return try parsing.Parser(@TypeOf(reader)).init(allocator, reader);
+pub fn parse(allocator: std.mem.Allocator, reader: *std.Io.Reader) !parsing.Parser() {
+    return try parsing.Parser().init(allocator, reader);
 }
 
 pub fn renderStream(
@@ -207,12 +207,17 @@ pub const Color = extern struct {
     }
 
     pub fn lerp(lhs: Self, rhs: Self, factor: f32) Self {
-        const t = std.math.clamp(factor, 0, 1);
+        const l = struct {
+            fn l(a: f32, b: f32, c: f32) u8 {
+                return @intFromFloat(@as(f32, @floatFromInt(a)) + (@as(f32, @floatFromInt(b)) - @as(f32, @floatFromInt(a))) * std.math.clamp(c, 0, 1));
+            }
+        }.l;
+
         return Self{
-            .r = lhs.r + (rhs.r - lhs.r) * t,
-            .g = lhs.g + (rhs.g - lhs.g) * t,
-            .b = lhs.b + (rhs.b - lhs.b) * t,
-            .a = lhs.a + (rhs.a - lhs.a) * t,
+            .r = l(lhs.r, rhs.r, factor),
+            .g = l(lhs.g, rhs.g, factor),
+            .b = l(lhs.b, rhs.b, factor),
+            .a = l(lhs.a, rhs.a, factor),
         };
     }
 

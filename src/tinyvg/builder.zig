@@ -29,7 +29,7 @@ pub fn Builder(comptime Writer: type) type {
     return struct {
         const Self = @This();
 
-        pub const Error = Writer.Error || error{OutOfRange};
+        pub const Error = error{WriteFailed} || error{OutOfRange};
 
         writer: Writer,
         state: State = .initial,
