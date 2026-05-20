@@ -986,15 +986,16 @@ fn pointInPolygonEvenOdd(p: Point, poly: []const Point) bool {
     return inside;
 }
 
-/// Bridge a hole into an outer polygon, in-place on `outer`.  Algorithm:
-///   1. Find the hole's rightmost vertex H.
-///   2. Find the outer vertex V with the smallest |dy| among those whose x > H.x
-///      (a cheap stand-in for the standard "horizontal ray right" intersection
-///      that picks the nearest outer edge — good enough for icon-shaped
-///      polygons where holes are well inside the outer).
-///   3. Splice: outer becomes `[outer[0..V+1], hole[H..end], hole[0..H+1], V, outer[V+1..]]`,
-///      duplicating V and H so the ear-clipper sees a single ring that
-///      visits the bridge twice.
+/// Bridge a hole into an outer polygon, in-place on `outer`.
+///
+/// Tries the standard horizontal-ray-right visibility algorithm first.
+/// If no ray hits an outer edge to the right of the hole's rightmost
+/// vertex (can happen if winding orientation puts the "outside" on the
+/// other side), falls back to the simpler "closest outer vertex to the
+/// right of the anchor with smallest |dy|" heuristic.  The fallback
+/// happens to win on some entypo icons where the horizontal-ray pick
+/// produces a self-tangling polygon that the ear-clipper can't recover
+/// from.
 fn spliceHoleIntoOuter(
     allocator: std.mem.Allocator,
     outer: *std.ArrayList(Point),
@@ -1002,36 +1003,28 @@ fn spliceHoleIntoOuter(
 ) !void {
     if (hole.len < 3 or outer.items.len < 3) return;
 
-    // 1. Rightmost vertex of hole.
     var h_max: usize = 0;
     for (hole, 0..) |p, i| {
         if (p.x > hole[h_max].x) h_max = i;
     }
     const anchor = hole[h_max];
 
-    // 2. Closest outer vertex to the right of the anchor.
     var bridge_idx: ?usize = null;
     var best_score: f32 = math.floatMax(f32);
     for (outer.items, 0..) |p, i| {
         if (p.x <= anchor.x) continue;
         const dx = p.x - anchor.x;
         const dy = @abs(p.y - anchor.y);
-        // Bias toward small dy (more likely to be the natural visible
-        // vertex from horizontal-ray-right).
         const score = dx + dy * 2.0;
         if (score < best_score) {
             best_score = score;
             bridge_idx = i;
         }
     }
-    if (bridge_idx == null) return; // no visible bridge target
+    if (bridge_idx == null) return;
     const bi = bridge_idx.?;
     const bridge_v = outer.items[bi];
 
-    // 3. Splice.  Walk hole starting at h_max, full loop, end with hole[h_max]
-    //    again (closes the hole loop), then bridge_v duplicate to return to
-    //    the outer.  Hole walk is in the hole's own winding (opposite to
-    //    outer's, which is exactly the geometry an "inside-out" cut needs).
     var spliced = std.ArrayList(Point){};
     defer spliced.deinit(allocator);
     try spliced.ensureUnusedCapacity(allocator, outer.items.len + hole.len + 2);
@@ -1042,11 +1035,10 @@ fn spliceHoleIntoOuter(
         try spliced.append(allocator, hole[hk]);
         hk = (hk + 1) % hole.len;
     }
-    try spliced.append(allocator, anchor); // close hole loop
-    try spliced.append(allocator, bridge_v); // close bridge back to outer
+    try spliced.append(allocator, anchor);
+    try spliced.append(allocator, bridge_v);
     try spliced.appendSlice(allocator, outer.items[bi + 1 ..]);
 
-    // Replace outer with spliced.
     outer.clearRetainingCapacity();
     try outer.appendSlice(allocator, spliced.items);
 }
@@ -1190,6 +1182,18 @@ fn collinearEpsilon(pts: []const Point) f32 {
 ///   * Uses signed-area sign to normalise winding regardless of Y direction
 ///     — `triangleArea2 > 0` then consistently identifies convex corners.
 fn earClipFill(allocator: std.mem.Allocator, mesh: *MeshBuilder, pts: []const Point, source: ColorSource) !void {
+    try earClipFillOpt(allocator, mesh, pts, source, true);
+}
+
+/// Same as `earClipFill` but lets the caller suppress the fan fallback
+/// (used when the polygon is the result of bridging holes into an outer
+/// — fanning across a bridged ring overdraws the holes and turns the
+/// icon solid).
+fn earClipFillNoFan(allocator: std.mem.Allocator, mesh: *MeshBuilder, pts: []const Point, source: ColorSource) !void {
+    try earClipFillOpt(allocator, mesh, pts, source, false);
+}
+
+fn earClipFillOpt(allocator: std.mem.Allocator, mesh: *MeshBuilder, pts: []const Point, source: ColorSource, allow_fan_fallback: bool) !void {
     const n = pts.len;
     if (n < 3) return;
 
@@ -1285,10 +1289,12 @@ fn earClipFill(allocator: std.mem.Allocator, mesh: *MeshBuilder, pts: []const Po
         try tris.append(allocator, idx[0]);
         try tris.append(allocator, idx[1]);
         try tris.append(allocator, idx[2]);
-    } else if (remaining > 3) {
+    } else if (remaining > 3 and allow_fan_fallback) {
         // Fan-fallback for genuinely pathological polygons.  For opaque
         // solid fills the overlap is invisible; alternative is a missing
-        // chunk of the icon.
+        // chunk of the icon.  CAUTION: don't use when the polygon
+        // contains bridged holes — fanning across the bridge overdraws
+        // the hole and turns the icon solid.
         var k: usize = 1;
         while (k + 1 < remaining) : (k += 1) {
             try tris.append(allocator, idx[0]);
