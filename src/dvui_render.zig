@@ -851,6 +851,13 @@ fn fillPathTvg(
             continue;
         }
         stripTrailingDuplicatesOfFirst(&pts);
+        // Degenerate Beziers (control points coincident with endpoints) and
+        // the way some encoders chain straight segments through curves
+        // produce runs of identical points.  Those zero-length edges break
+        // ear-clip's pointInTriangleStrict check (the duplicate vertex
+        // sits exactly on a triangle edge, causes inconsistent classifi-
+        // cation, eventually leaves the L's reflex corner unresolved).
+        collapseRunDuplicates(&pts);
         if (pts.items.len < 3) {
             pts.deinit(allocator);
             continue;
@@ -1190,61 +1197,73 @@ fn earClipFill(allocator: std.mem.Allocator, mesh: *MeshBuilder, pts: []const Po
     // tiny icons aren't classified as all-degenerate.
     const collinear_eps = collinearEpsilon(pts);
 
-    var i: usize = 0;
-    var consecutive_failures: usize = 0;
-
+    // Best-ear ear-clipping.  Instead of "first ear found", at each step
+    // scan the whole ring and pick the BEST ear — the one with the
+    // smallest triangle area (most "ear-like", least likely to span over
+    // a polygon feature).  Slower per step (O(N) per pick → O(N³) total)
+    // but completes correctly on shapes where first-ear gets confused by
+    // ambiguous near-degenerate vertices (e.g. entypo `address`'s deep-L
+    // with chained near-straight beziers).
     while (remaining > 3) {
-        if (consecutive_failures > remaining) break; // give up gracefully
-
-        const i_prev = (i + remaining - 1) % remaining;
-        const i_next = (i + 1) % remaining;
-        const a_i = idx[i_prev];
-        const b_i = idx[i];
-        const c_i = idx[i_next];
-        const a = verts_out[a_i];
-        const b = verts_out[b_i];
-        const c = verts_out[c_i];
-
-        const cross = triangleArea2(a, b, c);
-
-        // Collinear (or near-zero area) corner: remove without emitting so we
-        // never stall on degenerate runs.  This is safe for simple polygons
-        // because the middle vertex lies on the prev→next edge.
-        if (@abs(cross) <= collinear_eps) {
-            removeAt(idx, &remaining, i);
-            if (i >= remaining) i = 0;
-            consecutive_failures = 0;
-            continue;
+        // First sweep: prune collinear vertices so we don't trip ear
+        // detection on near-zero-area triangles.
+        var removed_collinear = true;
+        while (removed_collinear and remaining > 3) {
+            removed_collinear = false;
+            var k: usize = 0;
+            while (k < remaining) {
+                const kp = (k + remaining - 1) % remaining;
+                const kn = (k + 1) % remaining;
+                const ka = verts_out[idx[kp]];
+                const kb = verts_out[idx[k]];
+                const kc = verts_out[idx[kn]];
+                const c2 = triangleArea2(ka, kb, kc);
+                if (@abs(c2) <= collinear_eps) {
+                    removeAt(idx, &remaining, k);
+                    removed_collinear = true;
+                    if (remaining <= 3) break;
+                    continue;
+                }
+                k += 1;
+            }
         }
+        if (remaining <= 3) break;
 
-        var is_ear = cross > 0; // convex corner under our normalised winding
-
-        if (is_ear) {
-            // No OTHER vertex inside the candidate triangle?  Reflex vertices
-            // of the same polygon are the only ones that can sit inside.
+        // Best ear: smallest positive triangleArea2 with no other vertex
+        // strictly inside.
+        var best_i: ?usize = null;
+        var best_area: f32 = math.floatMax(f32);
+        var ii: usize = 0;
+        while (ii < remaining) : (ii += 1) {
+            const ip = (ii + remaining - 1) % remaining;
+            const in_ = (ii + 1) % remaining;
+            const a = verts_out[idx[ip]];
+            const b = verts_out[idx[ii]];
+            const c = verts_out[idx[in_]];
+            const cross = triangleArea2(a, b, c);
+            if (cross <= 0) continue;
+            var valid = true;
             var j: usize = 0;
             while (j < remaining) : (j += 1) {
-                if (j == i_prev or j == i or j == i_next) continue;
+                if (j == ip or j == ii or j == in_) continue;
                 if (pointInTriangleStrict(verts_out[idx[j]], a, b, c)) {
-                    is_ear = false;
+                    valid = false;
                     break;
                 }
             }
+            if (valid and cross < best_area) {
+                best_area = cross;
+                best_i = ii;
+            }
         }
-
-        if (is_ear) {
-            try tris.append(allocator, a_i);
-            try tris.append(allocator, b_i);
-            try tris.append(allocator, c_i);
-            removeAt(idx, &remaining, i);
-            // Step BACK so the (now) previous vertex gets re-tested — removing
-            // an ear can promote its neighbour to an ear too.
-            if (i == 0) i = remaining - 1 else i -= 1;
-            consecutive_failures = 0;
-        } else {
-            consecutive_failures += 1;
-            i = (i + 1) % remaining;
-        }
+        if (best_i == null) break; // genuinely pathological — fan fallback below
+        const bi = best_i.?;
+        const bp = (bi + remaining - 1) % remaining;
+        const bn = (bi + 1) % remaining;
+        try tris.append(allocator, idx[bp]);
+        try tris.append(allocator, idx[bi]);
+        try tris.append(allocator, idx[bn]);
+        removeAt(idx, &remaining, bi);
     }
 
     if (remaining == 3) {
