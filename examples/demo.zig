@@ -95,6 +95,9 @@ const Bench = struct {
 var bench_dvui: Bench = .{};
 var bench_z2d: Bench = .{};
 
+// Updated each frame from cell-hover detection; shown in the top bar.
+var hovered_name: ?[]const u8 = null;
+
 fn clearCaches() void {
     inline for ([_]*?CacheMap{ &dvui_cache, &z2d_cache }) |cache_opt_ptr| {
         var it = cache_opt_ptr.*.?.iterator();
@@ -192,6 +195,7 @@ pub fn main() !void {
 
 fn gui_frame() !bool {
     var keep_running = true;
+    hovered_name = null; // recomputed during this frame's cell loop
 
     var outer = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both });
     defer outer.deinit();
@@ -205,7 +209,10 @@ fn gui_frame() !bool {
         });
         defer bar.deinit();
 
-        dvui.label(@src(), "svg2tvg demo  |  icons: {d}", .{ICON_LIST.len}, .{});
+        dvui.label(@src(), "svg2tvg demo  |  icons: {d}  |  hover: {s}", .{
+            ICON_LIST.len,
+            hovered_name orelse "-",
+        }, .{});
 
         dvui.label(@src(), "  dvui_render  initial {d:.1} us x {d}  cached {d:.1} us x {d}", .{
             bench_dvui.initialAvgUs(),
@@ -341,16 +348,13 @@ fn renderColumn(id_extra: usize, method: Method, title: []const u8, keep_running
             .dvui_render => try drawCachedDvui(bytes, cell),
             .z2d => try drawCachedZ2d(bytes, cell),
         }
-        // Tooltip showing the icon name on hover — for debugging which
-        // icons render incorrectly.  id_extra mixes the column id with the
-        // icon index so each cell gets a unique widget id.
-        dvui.tooltip(
-            @src(),
-            .{ .active_rect = cell },
-            "{s}",
-            .{ICON_NAMES[i]},
-            .{ .id_extra = id_extra * 10000 + i },
-        );
+        // Hover detection (poor man's tooltip — FloatingTooltipWidget ignores
+        // caller-supplied id_extra so it can't be looped, see dvui v0.4.0
+        // FloatingTooltipWidget.zig:94).  Whichever cell the mouse is over
+        // sets `hovered_name`; the top bar displays it.
+        if (cell.contains(dvui.currentWindow().mouse_pt)) {
+            hovered_name = ICON_NAMES[i];
+        }
     }
 
     if (pic) |*p| {
