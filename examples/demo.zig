@@ -116,7 +116,7 @@ var hovered_name: ?[]const u8 = null;
 fn clearCaches() void {
     {
         var it = dvui_cache.?.iterator();
-        while (it.next()) |entry| entry.value_ptr.deinit(gpa);
+        while (it.next()) |entry| entry.value_ptr.deinit();
         dvui_cache.?.clearRetainingCapacity();
     }
     {
@@ -429,15 +429,23 @@ fn drawCachedDvui(bytes: []const u8, cell: dvui.Rect.Physical) !void {
 
     // MISS: render TVG → mesh anchored at (0,0), store, then submit translated.
     const t0 = std.time.nanoTimestamp();
-    var mesh: svg2tvg_dvui.MeshBuilder = .{};
-    errdefer mesh.deinit(gpa);
+    var mesh = svg2tvg_dvui.MeshBuilder.init(gpa);
+    errdefer mesh.deinit();
+
+    // Scratch arena for the transient triangle buffers dvui's
+    // `*Triangles` Path helpers leak (they over-allocate the Builder
+    // capacity, the partial-slice Triangles.deinit then mismatches GPA's
+    // size accounting).  Arena cleans them up wholesale.
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+
     const local_rect = dvui.Rect.Physical{
         .x = 0,
         .y = 0,
         .w = @as(f32, @floatFromInt(w_u)),
         .h = @as(f32, @floatFromInt(h_u)),
     };
-    svg2tvg_dvui.appendTvg(gpa, &mesh, bytes, local_rect, .{
+    svg2tvg_dvui.appendTvg(arena.allocator(), &mesh, bytes, local_rect, .{
         .color_override = ICON_COLOR,
         .keep_aspect = true,
     }) catch {};
