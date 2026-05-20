@@ -189,86 +189,77 @@ fn fillTvgRect(r: tvg.Rectangle, color: Color, xf: Transform) void {
 }
 
 fn strokeTvgRect(r: tvg.Rectangle, color: Color, thickness: f32, xf: Transform) void {
-    const alloc = dvui.currentWindow().lifo();
-    var pb = dvui.Path.Builder.init(alloc);
-    defer pb.deinit();
     const pts = [_]Point{
         xf.applyXY(r.x, r.y),
         xf.applyXY(r.x + r.width, r.y),
         xf.applyXY(r.x + r.width, r.y + r.height),
         xf.applyXY(r.x, r.y + r.height),
     };
-    for (pts) |p| pb.addPoint(p);
-    pb.build().stroke(.{ .thickness = thickness, .color = color, .closed = true });
-    addRoundJoins(&pts, true, thickness, color);
+    strokePolylineRoundJoined(&pts, true, thickness, color);
 }
 
 fn strokeLine(p0: Point, p1: Point, color: Color, thickness: f32) void {
-    const alloc = dvui.currentWindow().lifo();
-    var pb = dvui.Path.Builder.init(alloc);
-    defer pb.deinit();
-    pb.addPoint(p0);
-    pb.addPoint(p1);
-    pb.build().stroke(.{ .thickness = thickness, .color = color, .closed = false });
-    addRoundJoins(&.{ p0, p1 }, false, thickness, color);
+    const pts = [_]Point{ p0, p1 };
+    strokePolylineRoundJoined(&pts, false, thickness, color);
 }
 
-/// dvui's stroke uses miter joins clipped to 2x thickness — sharp polygonal
-/// corners (octagons, arc-sample chords) come out visibly chamfered.  A
-/// filled disc of stroke-radius at every polyline vertex paints over the
-/// chamfer and gives a round-join/round-cap look.
+/// Spec-compliant-ish stroke with round joins AND round caps — the approach
+/// SVG-origin icons (feather, lucide, etc.) are authored for.
 ///
-/// BUT: at sharp interior turns (e.g. lucide `activity`'s V valley, ~150°
-/// deflection) the disc extends far past the natural stroke band and shows
-/// up as a bulb on the outside of the corner.  We skip the disc on such
-/// vertices and let dvui's natural miter clip handle them.
+/// dvui's `Path.stroke` only does miter joins (clipped to 2x), which gives
+/// sharp corners and butt-capped endpoints.  z2d explicitly opts into
+/// round caps + round joins for the same icons (`setLineCapMode(.round)`
+/// + `setLineJoinMode(.round)` in `src/rendering.zig`), and we want to
+/// match that visual.
 ///
-/// Threshold: deflection > 60° (pi/3) is considered "sharp".  Endpoints of
-/// open paths always get the disc (round cap).
+/// Implementation:
+///   1. Stroke EACH edge `[p_i, p_(i+1)]` as a separate two-point butt-
+///      capped polyline.  Butt caps don't extend past the endpoint, so
+///      consecutive edges meet without overlap or miter spikes.
+///   2. Paint a filled disc of stroke-radius at every vertex.  The disc
+///      acts as the round cap (for endpoints of open paths) AND as the
+///      round join (filling the wedge between adjacent edges' butt caps).
 ///
-/// Cheap because the disc fans are tiny and the output gets cached into
-/// the icon's offscreen texture on first render.
-fn addRoundJoins(pts: []const Point, closed: bool, thickness: f32, color: Color) void {
-    const radius = thickness * 0.5;
-    if (radius < 0.5) return;
+/// Same geometry SVG produces with `stroke-linejoin=round`+`stroke-
+/// linecap=round`.  Doubles the triangle count vs a single combined
+/// stroke, but output is cached per icon so the cost is one-shot.
+fn strokePolylineRoundJoined(
+    pts: []const Point,
+    closed: bool,
+    thickness: f32,
+    color: Color,
+) void {
+    if (pts.len < 2) return;
     const alloc = dvui.currentWindow().lifo();
+    const radius = thickness * 0.5;
     const n = pts.len;
 
-    for (pts, 0..) |p, i| {
-        const is_first = i == 0;
-        const is_last = i + 1 == n;
-        const has_prev = !is_first or closed;
-        const has_next = !is_last or closed;
-
-        if (has_prev and has_next) {
-            const prev = if (!is_first) pts[i - 1] else pts[n - 1];
-            const next = if (!is_last) pts[i + 1] else pts[0];
-            const in_dx = p.x - prev.x;
-            const in_dy = p.y - prev.y;
-            const out_dx = next.x - p.x;
-            const out_dy = next.y - p.y;
-            const in_len = @sqrt(in_dx * in_dx + in_dy * in_dy);
-            const out_len = @sqrt(out_dx * out_dx + out_dy * out_dy);
-            if (in_len < 1e-3 or out_len < 1e-3) continue;
-            // Skip when EITHER neighbour is closer than the disc radius.
-            // Two cases this catches:
-            //  - Both small → we're inside a densely-sampled arc; samples
-            //    form a smooth curve already.
-            //  - One small → we're at the junction between a long segment
-            //    and an arc; the disc on the long-side would extend past
-            //    the tiny arc as a visible bulb (lucide `activity`).
-            if (in_len < radius or out_len < radius) continue;
-            // No sharp-turn skip: at this point both neighbours are far
-            // enough that the disc IS the desired round-cap geometry.  For
-            // a 180°-turn (e.g. an arc collapsed to a sharp V apex) the
-            // disc paints exactly the half-circle that SVG round-join would
-            // place on the outside of the bend.
-        }
-
+    // 1. Per-edge butt-capped strokes.
+    var i: usize = 0;
+    const edge_count: usize = if (closed) n else n - 1;
+    while (i < edge_count) : (i += 1) {
+        const a = pts[i];
+        const b = pts[(i + 1) % n];
+        if (approxEqPoint(a, b)) continue;
         var pb = dvui.Path.Builder.init(alloc);
         defer pb.deinit();
-        // dvui's addArc sweeps from `start` DOWN to `end`; pass 2pi→0 for a
-        // full circle (with `start < end` the inner loop is a no-op).
+        pb.addPoint(a);
+        pb.addPoint(b);
+        pb.build().stroke(.{
+            .thickness = thickness,
+            .color = color,
+            .closed = false,
+            .endcap_style = .none, // butt — disc at vertex provides the round shape
+        });
+    }
+
+    // 2. Round cap / join discs at every vertex.
+    if (radius < 0.5) return;
+    for (pts) |p| {
+        var pb = dvui.Path.Builder.init(alloc);
+        defer pb.deinit();
+        // dvui's addArc sweeps `start` DOWN to `end`; pass 2pi→0 for a full
+        // circle.  `skip_end=true` because start and end are coincident.
         pb.addArc(p, radius, math.pi * 2.0, 0, true);
         pb.build().fillConvex(.{ .color = color });
     }
@@ -307,12 +298,7 @@ fn strokePolylineTvg(
     const pts = alloc.alloc(Point, vertices.len) catch return;
     defer alloc.free(pts);
     for (vertices, 0..) |v, i| pts[i] = xf.apply(v);
-
-    var pb = dvui.Path.Builder.init(alloc);
-    defer pb.deinit();
-    for (pts) |p| pb.addPoint(p);
-    pb.build().stroke(.{ .thickness = thickness, .color = color, .closed = closed });
-    addRoundJoins(pts, closed, thickness, color);
+    strokePolylineRoundJoined(pts, closed, thickness, color);
 }
 
 // ---------------------------------------------------------------------------
@@ -590,7 +576,6 @@ fn strokePathTvg(
     xf: Transform,
 ) !void {
     const thickness = line_width * xf.meanScale();
-    const alloc = dvui.currentWindow().lifo();
     var pts = std.ArrayList(Point){};
     defer pts.deinit(allocator);
     for (path.segments) |seg| {
@@ -608,11 +593,7 @@ fn strokePathTvg(
         // cause the same miter-spike artifact at the bad vertex.
         collapseRunDuplicates(&pts);
         if (pts.items.len < 2) continue;
-        var pb = dvui.Path.Builder.init(alloc);
-        defer pb.deinit();
-        for (pts.items) |p| pb.addPoint(p);
-        pb.build().stroke(.{ .thickness = thickness, .color = color, .closed = closed });
-        addRoundJoins(pts.items, closed, thickness, color);
+        strokePolylineRoundJoined(pts.items, closed, thickness, color);
     }
 }
 
