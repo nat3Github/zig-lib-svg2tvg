@@ -30,6 +30,13 @@ const ICON_LIST = blk: {
     break :blk arr;
 };
 
+const ICON_NAMES = blk: {
+    const decls = @typeInfo(icons.tvg.feather).@"struct".decls;
+    var arr: [decls.len][]const u8 = undefined;
+    for (decls, 0..) |d, i| arr[i] = d.name;
+    break :blk arr;
+};
+
 const GRID_COLS: usize = 8;
 const CELL_SIZE: f32 = 72; // logical px per cell
 const ICON_COLOR: dvui.Color = .{ .r = 0x10, .g = 0x10, .b = 0x18, .a = 0xff };
@@ -334,6 +341,16 @@ fn renderColumn(id_extra: usize, method: Method, title: []const u8, keep_running
             .dvui_render => try drawCachedDvui(bytes, cell),
             .z2d => try drawCachedZ2d(bytes, cell),
         }
+        // Tooltip showing the icon name on hover — for debugging which
+        // icons render incorrectly.  id_extra mixes the column id with the
+        // icon index so each cell gets a unique widget id.
+        dvui.tooltip(
+            @src(),
+            .{ .active_rect = cell },
+            "{s}",
+            .{ICON_NAMES[i]},
+            .{ .id_extra = id_extra * 10000 + i },
+        );
     }
 
     if (pic) |*p| {
