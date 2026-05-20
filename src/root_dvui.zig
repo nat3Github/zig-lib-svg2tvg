@@ -18,4 +18,6 @@ pub const tvg_from_svg = svg2tvg.tvg_from_svg;
 pub const conversion = svg2tvg.conversion;
 
 pub const renderTvg = dvui_render.renderTvg;
+pub const appendTvg = dvui_render.appendTvg;
+pub const MeshBuilder = dvui_render.MeshBuilder;
 pub const RenderOptions = dvui_render.RenderOptions;

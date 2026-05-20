@@ -68,7 +68,6 @@ var single_icon: ?[]const u8 = null;
 // --- Cache + stats ----------------------------------------------------------
 
 const CacheKey = struct { ptr: usize, w: u32, h: u32 };
-const CacheMap = std.AutoHashMap(u64, dvui.Texture);
 
 fn keyHash(k: CacheKey) u64 {
     var h: u64 = k.ptr;
@@ -77,8 +76,17 @@ fn keyHash(k: CacheKey) u64 {
     return h;
 }
 
-var dvui_cache: ?CacheMap = null;
-var z2d_cache: ?CacheMap = null;
+// dvui_render cache stores a self-owned triangle mesh anchored at (0,0).
+// Each frame we dupe vertex data into the dvui arena, translate to the
+// current cell position, and submit via `dvui.renderTriangles`.  No
+// texture in sight.
+const DvuiCacheMap = std.AutoHashMap(u64, svg2tvg_dvui.MeshBuilder);
+
+// z2d cache stores a GPU texture (one PMA quad per icon).
+const Z2dCacheMap = std.AutoHashMap(u64, dvui.Texture);
+
+var dvui_cache: ?DvuiCacheMap = null;
+var z2d_cache: ?Z2dCacheMap = null;
 
 const Bench = struct {
     initial_total_ns: u64 = 0,
@@ -106,10 +114,15 @@ var bench_z2d: Bench = .{};
 var hovered_name: ?[]const u8 = null;
 
 fn clearCaches() void {
-    inline for ([_]*?CacheMap{ &dvui_cache, &z2d_cache }) |cache_opt_ptr| {
-        var it = cache_opt_ptr.*.?.iterator();
+    {
+        var it = dvui_cache.?.iterator();
+        while (it.next()) |entry| entry.value_ptr.deinit(gpa);
+        dvui_cache.?.clearRetainingCapacity();
+    }
+    {
+        var it = z2d_cache.?.iterator();
         while (it.next()) |entry| entry.value_ptr.destroyLater();
-        cache_opt_ptr.*.?.clearRetainingCapacity();
+        z2d_cache.?.clearRetainingCapacity();
     }
     bench_dvui.reset();
     bench_z2d.reset();
@@ -150,10 +163,13 @@ pub fn main() !void {
     defer if (screenshot_path) |p| gpa.free(p);
     defer if (single_icon) |p| gpa.free(p);
 
-    dvui_cache = CacheMap.init(gpa);
-    z2d_cache = CacheMap.init(gpa);
-    defer dvui_cache.?.deinit();
-    defer z2d_cache.?.deinit();
+    dvui_cache = DvuiCacheMap.init(gpa);
+    z2d_cache = Z2dCacheMap.init(gpa);
+    defer {
+        clearCaches();
+        dvui_cache.?.deinit();
+        z2d_cache.?.deinit();
+    }
 
     var backend = try SDLBackend.initWindow(.{
         .allocator = gpa,
@@ -384,7 +400,14 @@ fn renderColumn(id_extra: usize, method: Method, title: []const u8, keep_running
     }
 }
 
-// --- dvui_render with offscreen-texture cache -------------------------------
+// --- dvui_render with TRIANGLE-MESH cache (no texture intermediate) --------
+//
+// On miss we walk the TVG and accumulate every fill / stroke / vertex disc
+// triangle into ONE `MeshBuilder` anchored at (0,0), then stash that
+// builder in the cache (owns its vertex + index slices via gpa).  On hit
+// we dupe the slices into dvui's per-frame arena, translate vertices by
+// the current `cell.topLeft()`, and call `dvui.renderTriangles`.  Nothing
+// touches the GPU until that one submit call, and no texture is created.
 
 fn drawCachedDvui(bytes: []const u8, cell: dvui.Rect.Physical) !void {
     const w_i: i32 = @intFromFloat(@floor(cell.w));
@@ -394,54 +417,60 @@ fn drawCachedDvui(bytes: []const u8, cell: dvui.Rect.Physical) !void {
     const h_u: u32 = @intCast(h_i);
     const key = keyHash(.{ .ptr = @intFromPtr(bytes.ptr), .w = w_u, .h = h_u });
 
-    // Skip cells outside the visible viewport.  Without this we'd try to
-    // populate the cache for ~286×2 icons on the first frame, which exceeds
-    // the backend's per-frame texture-creation budget and we end up with
-    // half the grid blank.  As the user scrolls, off-screen cells fill in.
     if (dvui.clipGet().intersect(cell).empty()) return;
 
-    const cw = dvui.currentWindow();
-
-    if (dvui_cache.?.get(key)) |tex| {
+    if (dvui_cache.?.getPtr(key)) |cached| {
         const t0 = std.time.nanoTimestamp();
-        dvui.renderTexture(tex, .{ .r = cell, .s = 1.0 }, .{}) catch {};
+        try submitMeshTranslated(cached, cell);
         bench_dvui.cached_total_ns += @intCast(std.time.nanoTimestamp() - t0);
         bench_dvui.cached_count += 1;
         return;
     }
 
-    // MISS: render into an offscreen target so we get a single texture we can
-    // blit cheaply on subsequent frames.
-    //
-    // Two non-obvious requirements:
-    //   1. The current clip rect is whatever the parent widget left us with
-    //      (usually the visible scroll viewport).  Off-screen cells would
-    //      have an empty clip and produce a blank texture.  Temporarily widen
-    //      the clip to cover the whole texture target so every cell renders.
-    //   2. Use a target `offset` so draws at the cell's screen position
-    //      translate into the texture's local (0..w, 0..h) coords — that way
-    //      the cached texture stores the icon at the origin and can later be
-    //      blitted with `renderTexture` anywhere.
+    // MISS: render TVG → mesh anchored at (0,0), store, then submit translated.
     const t0 = std.time.nanoTimestamp();
-    const target = dvui.textureCreateTarget(w_u, h_u, .linear, .rgba_32) catch return;
-    const prev_target = dvui.renderTarget(.{ .texture = target, .offset = cell.topLeft() });
-    const prev_clip = dvui.clipGet();
-    dvui.clipSet(.{ .x = cell.x, .y = cell.y, .w = cell.w, .h = cell.h });
-
-    svg2tvg_dvui.renderTvg(cw.lifo(), bytes, cell, .{
+    var mesh: svg2tvg_dvui.MeshBuilder = .{};
+    errdefer mesh.deinit(gpa);
+    const local_rect = dvui.Rect.Physical{
+        .x = 0,
+        .y = 0,
+        .w = @as(f32, @floatFromInt(w_u)),
+        .h = @as(f32, @floatFromInt(h_u)),
+    };
+    svg2tvg_dvui.appendTvg(gpa, &mesh, bytes, local_rect, .{
         .color_override = ICON_COLOR,
         .keep_aspect = true,
     }) catch {};
 
-    dvui.clipSet(prev_clip);
-    _ = dvui.renderTarget(prev_target);
-
-    const tex = dvui.textureFromTarget(target) catch return;
-    dvui_cache.?.put(key, tex) catch {};
-    dvui.renderTexture(tex, .{ .r = cell, .s = 1.0 }, .{}) catch {};
+    try dvui_cache.?.put(key, mesh);
+    // After put, the cache OWNS mesh.  Re-fetch the stored value to submit.
+    if (dvui_cache.?.getPtr(key)) |cached| {
+        try submitMeshTranslated(cached, cell);
+    }
 
     bench_dvui.initial_total_ns += @intCast(std.time.nanoTimestamp() - t0);
     bench_dvui.initial_count += 1;
+}
+
+/// Dupe the cached (0,0)-anchored mesh into dvui's per-frame lifo arena,
+/// translate every vertex by `cell.topLeft()`, then submit.  The lifo
+/// allocation is freed automatically at end of frame.
+fn submitMeshTranslated(mesh: *svg2tvg_dvui.MeshBuilder, cell: dvui.Rect.Physical) !void {
+    if (mesh.idx.items.len == 0) return;
+    const cw = dvui.currentWindow();
+    const alloc = cw.lifo();
+
+    var tri = mesh.toTriangles().dupe(alloc) catch return;
+    defer tri.deinit(alloc);
+
+    for (tri.vertexes) |*v| {
+        v.pos.x += cell.x;
+        v.pos.y += cell.y;
+    }
+    tri.bounds.x += cell.x;
+    tri.bounds.y += cell.y;
+
+    dvui.renderTriangles(tri, null) catch {};
 }
 
 // --- z2d with PMA-texture cache --------------------------------------------

@@ -32,9 +32,90 @@ pub const RenderOptions = struct {
     fade: f32 = 1.0,
 };
 
+/// Caller-owned accumulator that collects ALL triangles for a TVG render
+/// (fills, stroke bands, vertex discs) into one combined mesh.
+///
+/// Use this when you want to cache the icon's geometry once and replay it
+/// every frame with `dvui.renderTriangles` instead of regenerating, OR
+/// when you want to render the icon yourself (e.g. apply your own
+/// transform / clip / color tweak via vertex post-processing).
+///
+/// The mesh lives in `vtx`/`idx` indexed by `dvui.Vertex.Index`.  After
+/// `appendTvg` returns, call `toTriangles()` to get a `dvui.Triangles`
+/// pointing at the underlying slices, then either submit it once via
+/// `dvui.renderTriangles` (cache-warm path) or `dupe`+translate+submit
+/// each frame (cached-replay path).
+pub const MeshBuilder = struct {
+    vtx: std.ArrayListUnmanaged(dvui.Vertex) = .empty,
+    idx: std.ArrayListUnmanaged(dvui.Vertex.Index) = .empty,
+    bounds_min_x: f32 = math.floatMax(f32),
+    bounds_min_y: f32 = math.floatMax(f32),
+    bounds_max_x: f32 = -math.floatMax(f32),
+    bounds_max_y: f32 = -math.floatMax(f32),
+
+    pub fn deinit(self: *MeshBuilder, alloc: std.mem.Allocator) void {
+        self.vtx.deinit(alloc);
+        self.idx.deinit(alloc);
+    }
+
+    /// Append another mesh's vertices/indices into this one, rebasing
+    /// indices by the current vertex count.  Borrows `src` (caller still
+    /// owns it / must deinit it).
+    pub fn appendMesh(self: *MeshBuilder, alloc: std.mem.Allocator, src: dvui.Triangles) !void {
+        if (src.vertexes.len == 0 or src.indices.len == 0) return;
+        const base: dvui.Vertex.Index = @intCast(self.vtx.items.len);
+        try self.vtx.appendSlice(alloc, src.vertexes);
+        try self.idx.ensureUnusedCapacity(alloc, src.indices.len);
+        for (src.indices) |i| self.idx.appendAssumeCapacity(base + i);
+        // Track AABB so a downstream caller can clip cheaply.
+        for (src.vertexes) |v| {
+            if (v.pos.x < self.bounds_min_x) self.bounds_min_x = v.pos.x;
+            if (v.pos.y < self.bounds_min_y) self.bounds_min_y = v.pos.y;
+            if (v.pos.x > self.bounds_max_x) self.bounds_max_x = v.pos.x;
+            if (v.pos.y > self.bounds_max_y) self.bounds_max_y = v.pos.y;
+        }
+    }
+
+    /// Borrowed view of the accumulated geometry as a `dvui.Triangles`.
+    pub fn toTriangles(self: *const MeshBuilder) dvui.Triangles {
+        const empty_bounds = self.vtx.items.len == 0;
+        return .{
+            .vertexes = self.vtx.items,
+            .indices = self.idx.items,
+            .bounds = if (empty_bounds) .{} else .{
+                .x = self.bounds_min_x,
+                .y = self.bounds_min_y,
+                .w = self.bounds_max_x - self.bounds_min_x,
+                .h = self.bounds_max_y - self.bounds_min_y,
+            },
+        };
+    }
+};
+
 /// Render a TVG byte stream into `rect` (physical pixels).
+///
+/// Convenience: builds a temporary mesh and submits it via
+/// `dvui.renderTriangles`.  For caching the geometry use `appendTvg`
+/// directly with a long-lived `MeshBuilder`.
 pub fn renderTvg(
     allocator: std.mem.Allocator,
+    tvg_bytes: []const u8,
+    rect: Rect,
+    opts: RenderOptions,
+) !void {
+    var mesh: MeshBuilder = .{};
+    defer mesh.deinit(allocator);
+    try appendTvg(allocator, &mesh, tvg_bytes, rect, opts);
+    if (mesh.idx.items.len == 0) return;
+    dvui.renderTriangles(mesh.toTriangles(), null) catch {};
+}
+
+/// Walk a TVG byte stream and APPEND its triangles to `mesh`.  No
+/// submission happens — caller decides when (and how many times) to draw
+/// the resulting mesh.
+pub fn appendTvg(
+    allocator: std.mem.Allocator,
+    mesh: *MeshBuilder,
     tvg_bytes: []const u8,
     rect: Rect,
     opts: RenderOptions,
@@ -46,7 +127,7 @@ pub fn renderTvg(
     const xf = Transform.fromRect(rect, @floatFromInt(parser.header.width), @floatFromInt(parser.header.height), opts.keep_aspect);
 
     while (try parser.next()) |cmd| {
-        try renderCommand(allocator, parser.color_table, cmd, xf, opts);
+        try renderCommand(allocator, mesh, parser.color_table, cmd, xf, opts);
     }
 }
 
@@ -95,6 +176,7 @@ const Transform = struct {
 
 fn renderCommand(
     allocator: std.mem.Allocator,
+    mesh: *MeshBuilder,
     color_table: []const tvg.Color,
     cmd: parsing.DrawCommand,
     xf: Transform,
@@ -102,49 +184,49 @@ fn renderCommand(
 ) !void {
     switch (cmd) {
         .fill_polygon => |fp| {
-            try fillPolygonTvg(allocator, fp.vertices, fp.style, color_table, xf, opts);
+            try fillPolygonTvg(allocator, mesh, fp.vertices, fp.style, color_table, xf, opts);
         },
         .fill_rectangles => |fr| {
             const col = resolveStyleColor(fr.style, color_table, opts);
-            for (fr.rectangles) |r| fillTvgRect(r, col, xf);
+            for (fr.rectangles) |r| try fillTvgRect(allocator, mesh, r, col, xf);
         },
         .fill_path => |fp| {
-            try fillPathTvg(allocator, fp.path, fp.style, color_table, xf, opts);
+            try fillPathTvg(allocator, mesh, fp.path, fp.style, color_table, xf, opts);
         },
         .draw_lines => |dl| {
             const col = resolveStyleColor(dl.style, color_table, opts);
             const thickness = dl.line_width * xf.meanScale();
-            for (dl.lines) |ln| strokeLine(xf.apply(ln.start), xf.apply(ln.end), col, thickness);
+            for (dl.lines) |ln| try strokeLine(allocator, mesh, xf.apply(ln.start), xf.apply(ln.end), col, thickness);
         },
         .draw_line_loop => |ls| {
             const col = resolveStyleColor(ls.style, color_table, opts);
-            strokePolylineTvg(ls.vertices, true, ls.line_width, col, xf);
+            try strokePolylineTvg(allocator, mesh, ls.vertices, true, ls.line_width, col, xf);
         },
         .draw_line_strip => |ls| {
             const col = resolveStyleColor(ls.style, color_table, opts);
-            strokePolylineTvg(ls.vertices, false, ls.line_width, col, xf);
+            try strokePolylineTvg(allocator, mesh, ls.vertices, false, ls.line_width, col, xf);
         },
         .draw_line_path => |dp| {
             const col = resolveStyleColor(dp.style, color_table, opts);
-            try strokePathTvg(allocator, dp.path, dp.line_width, col, xf);
+            try strokePathTvg(allocator, mesh, dp.path, dp.line_width, col, xf);
         },
         .outline_fill_polygon => |o| {
-            try fillPolygonTvg(allocator, o.vertices, o.fill_style, color_table, xf, opts);
+            try fillPolygonTvg(allocator, mesh, o.vertices, o.fill_style, color_table, xf, opts);
             const stroke_col = resolveStyleColor(o.line_style, color_table, opts);
-            strokePolylineTvg(o.vertices, true, o.line_width, stroke_col, xf);
+            try strokePolylineTvg(allocator, mesh, o.vertices, true, o.line_width, stroke_col, xf);
         },
         .outline_fill_rectangles => |o| {
             const fill_col = resolveStyleColor(o.fill_style, color_table, opts);
             const stroke_col = resolveStyleColor(o.line_style, color_table, opts);
             const thickness = o.line_width * xf.meanScale();
             for (o.rectangles) |r| {
-                fillTvgRect(r, fill_col, xf);
-                strokeTvgRect(r, stroke_col, thickness, xf);
+                try fillTvgRect(allocator, mesh, r, fill_col, xf);
+                try strokeTvgRect(allocator, mesh, r, stroke_col, thickness, xf);
             }
         },
         .outline_fill_path => |o| {
-            try fillPathTvg(allocator, o.path, o.fill_style, color_table, xf, opts);
-            try strokePathTvg(allocator, o.path, o.line_width, resolveStyleColor(o.line_style, color_table, opts), xf);
+            try fillPathTvg(allocator, mesh, o.path, o.fill_style, color_table, xf, opts);
+            try strokePathTvg(allocator, mesh, o.path, o.line_width, resolveStyleColor(o.line_style, color_table, opts), xf);
         },
     }
 }
@@ -177,30 +259,31 @@ fn resolveStyleColor(style: tvg.Style, color_table: []const tvg.Color, opts: Ren
 // Fill / stroke primitives in TVG space
 // ---------------------------------------------------------------------------
 
-fn fillTvgRect(r: tvg.Rectangle, color: Color, xf: Transform) void {
-    const alloc = dvui.currentWindow().lifo();
+fn fillTvgRect(alloc: std.mem.Allocator, mesh: *MeshBuilder, r: tvg.Rectangle, color: Color, xf: Transform) !void {
     var pb = dvui.Path.Builder.init(alloc);
     defer pb.deinit();
     pb.addPoint(xf.applyXY(r.x, r.y));
     pb.addPoint(xf.applyXY(r.x + r.width, r.y));
     pb.addPoint(xf.applyXY(r.x + r.width, r.y + r.height));
     pb.addPoint(xf.applyXY(r.x, r.y + r.height));
-    pb.build().fillConvex(.{ .color = color });
+    var tri = pb.build().fillConvexTriangles(alloc, .{ .color = color }) catch return;
+    defer tri.deinit(alloc);
+    try mesh.appendMesh(alloc, tri);
 }
 
-fn strokeTvgRect(r: tvg.Rectangle, color: Color, thickness: f32, xf: Transform) void {
+fn strokeTvgRect(alloc: std.mem.Allocator, mesh: *MeshBuilder, r: tvg.Rectangle, color: Color, thickness: f32, xf: Transform) !void {
     const pts = [_]Point{
         xf.applyXY(r.x, r.y),
         xf.applyXY(r.x + r.width, r.y),
         xf.applyXY(r.x + r.width, r.y + r.height),
         xf.applyXY(r.x, r.y + r.height),
     };
-    strokePolylineRoundJoined(&pts, true, thickness, color);
+    try strokePolylineRoundJoined(alloc, mesh, &pts, true, thickness, color);
 }
 
-fn strokeLine(p0: Point, p1: Point, color: Color, thickness: f32) void {
+fn strokeLine(alloc: std.mem.Allocator, mesh: *MeshBuilder, p0: Point, p1: Point, color: Color, thickness: f32) !void {
     const pts = [_]Point{ p0, p1 };
-    strokePolylineRoundJoined(&pts, false, thickness, color);
+    try strokePolylineRoundJoined(alloc, mesh, &pts, false, thickness, color);
 }
 
 /// Spec-compliant-ish stroke with round joins AND round caps — the approach
@@ -224,13 +307,14 @@ fn strokeLine(p0: Point, p1: Point, color: Color, thickness: f32) void {
 /// linecap=round`.  Doubles the triangle count vs a single combined
 /// stroke, but output is cached per icon so the cost is one-shot.
 fn strokePolylineRoundJoined(
+    alloc: std.mem.Allocator,
+    mesh: *MeshBuilder,
     pts: []const Point,
     closed: bool,
     thickness: f32,
     color: Color,
-) void {
+) !void {
     if (pts.len < 2) return;
-    const alloc = dvui.currentWindow().lifo();
     const radius = thickness * 0.5;
     const n = pts.len;
 
@@ -245,12 +329,14 @@ fn strokePolylineRoundJoined(
         defer pb.deinit();
         pb.addPoint(a);
         pb.addPoint(b);
-        pb.build().stroke(.{
+        var tri = pb.build().strokeTriangles(alloc, .{
             .thickness = thickness,
             .color = color,
             .closed = false,
             .endcap_style = .none, // butt — disc at vertex provides the round shape
-        });
+        }) catch continue;
+        defer tri.deinit(alloc);
+        try mesh.appendMesh(alloc, tri);
     }
 
     // 2. Round cap / join discs at every vertex.
@@ -261,12 +347,15 @@ fn strokePolylineRoundJoined(
         // dvui's addArc sweeps `start` DOWN to `end`; pass 2pi→0 for a full
         // circle.  `skip_end=true` because start and end are coincident.
         pb.addArc(p, radius, math.pi * 2.0, 0, true);
-        pb.build().fillConvex(.{ .color = color });
+        var tri = pb.build().fillConvexTriangles(alloc, .{ .color = color }) catch continue;
+        defer tri.deinit(alloc);
+        try mesh.appendMesh(alloc, tri);
     }
 }
 
 fn fillPolygonTvg(
     allocator: std.mem.Allocator,
+    mesh: *MeshBuilder,
     vertices: []const tvg.Point,
     style: tvg.Style,
     color_table: []const tvg.Color,
@@ -282,23 +371,24 @@ fn fillPolygonTvg(
     defer allocator.free(pts);
     for (vertices, 0..) |v, i| pts[i] = xf.apply(v);
 
-    try fillPolygonPhysical(allocator, pts, color, opts.fade);
+    try fillPolygonPhysical(allocator, mesh, pts, color, opts.fade);
 }
 
 fn strokePolylineTvg(
+    allocator: std.mem.Allocator,
+    mesh: *MeshBuilder,
     vertices: []const tvg.Point,
     closed: bool,
     line_width: f32,
     color: Color,
     xf: Transform,
-) void {
+) !void {
     if (vertices.len < 2) return;
     const thickness = line_width * xf.meanScale();
-    const alloc = dvui.currentWindow().lifo();
-    const pts = alloc.alloc(Point, vertices.len) catch return;
-    defer alloc.free(pts);
+    const pts = try allocator.alloc(Point, vertices.len);
+    defer allocator.free(pts);
     for (vertices, 0..) |v, i| pts[i] = xf.apply(v);
-    strokePolylineRoundJoined(pts, closed, thickness, color);
+    try strokePolylineRoundJoined(allocator, mesh, pts, closed, thickness, color);
 }
 
 // ---------------------------------------------------------------------------
@@ -540,6 +630,7 @@ fn flattenArc(
 
 fn fillPathTvg(
     allocator: std.mem.Allocator,
+    mesh: *MeshBuilder,
     path: tvg.Path,
     style: tvg.Style,
     color_table: []const tvg.Color,
@@ -547,29 +638,21 @@ fn fillPathTvg(
     opts: RenderOptions,
 ) !void {
     const color = resolveStyleColor(style, color_table, opts);
-    // Each segment is a sub-polygon; for fills, render each independently as
-    // an ear-clipped polygon.  This is correct for non-overlapping subpaths;
-    // compound paths with holes (even-odd) would need proper polygon-with-
-    // hole tessellation — punted for T1.
     var pts = std.ArrayList(Point){};
     defer pts.deinit(allocator);
     for (path.segments) |seg| {
         pts.clearRetainingCapacity();
         try flattenSegment(seg, xf, &pts, allocator, 0);
         if (pts.items.len < 3) continue;
-        // Strip ALL trailing duplicates of the start vertex.  A closed sub-
-        // path commonly produces two copies: the last bezier/arc lands back
-        // on the start point, AND the `.close` command appends start again.
-        // Leaving even one causes a zero-length segment that pollutes ear-
-        // clipping and stroke miter joins.
         stripTrailingDuplicatesOfFirst(&pts);
         if (pts.items.len < 3) continue;
-        try fillPolygonPhysical(allocator, pts.items, color, opts.fade);
+        try fillPolygonPhysical(allocator, mesh, pts.items, color, opts.fade);
     }
 }
 
 fn strokePathTvg(
     allocator: std.mem.Allocator,
+    mesh: *MeshBuilder,
     path: tvg.Path,
     line_width: f32,
     color: Color,
@@ -582,18 +665,11 @@ fn strokePathTvg(
         pts.clearRetainingCapacity();
         try flattenSegment(seg, xf, &pts, allocator, thickness * 0.5);
         if (pts.items.len < 2) continue;
-        // Strip every trailing copy of the start point — the last bezier/arc
-        // commonly lands on `start`, and `.close` then appends start again.
-        // dvui's stroke routine produces a perpendicular spike at the join
-        // whenever the closing segment has near-zero length (degenerate
-        // normal), so we MUST collapse them.
         const closed = pts.items.len > 1 and approxEqPoint(pts.items[0], pts.items[pts.items.len - 1]);
         if (closed) stripTrailingDuplicatesOfFirst(&pts);
-        // Also collapse zero-length runs anywhere in the polyline — these
-        // cause the same miter-spike artifact at the bad vertex.
         collapseRunDuplicates(&pts);
         if (pts.items.len < 2) continue;
-        strokePolylineRoundJoined(pts.items, closed, thickness, color);
+        try strokePolylineRoundJoined(allocator, mesh, pts.items, closed, thickness, color);
     }
 }
 
@@ -606,20 +682,22 @@ fn strokePathTvg(
 /// run ear clipping and emit a single batched triangle mesh.
 fn fillPolygonPhysical(
     allocator: std.mem.Allocator,
+    mesh: *MeshBuilder,
     pts: []const Point,
     color: Color,
     fade: f32,
 ) !void {
     if (pts.len < 3) return;
     if (isConvex(pts)) {
-        const win_alloc = dvui.currentWindow().lifo();
-        var pb = dvui.Path.Builder.init(win_alloc);
+        var pb = dvui.Path.Builder.init(allocator);
         defer pb.deinit();
         for (pts) |p| pb.addPoint(p);
-        pb.build().fillConvex(.{ .color = color, .fade = fade });
+        var tri = pb.build().fillConvexTriangles(allocator, .{ .color = color, .fade = fade }) catch return;
+        defer tri.deinit(allocator);
+        try mesh.appendMesh(allocator, tri);
         return;
     }
-    try earClipFill(allocator, pts, color);
+    try earClipFill(allocator, mesh, pts, color);
 }
 
 fn isConvex(pts: []const Point) bool {
@@ -714,7 +792,7 @@ fn collinearEpsilon(pts: []const Point) f32 {
 ///     always makes progress and degenerate triangles don't get emitted.
 ///   * Uses signed-area sign to normalise winding regardless of Y direction
 ///     — `triangleArea2 > 0` then consistently identifies convex corners.
-fn earClipFill(allocator: std.mem.Allocator, pts: []const Point, color: Color) !void {
+fn earClipFill(allocator: std.mem.Allocator, mesh: *MeshBuilder, pts: []const Point, color: Color) !void {
     const n = pts.len;
     if (n < 3) return;
 
@@ -803,10 +881,9 @@ fn earClipFill(allocator: std.mem.Allocator, pts: []const Point, color: Color) !
     // intersection, etc.) — emit nothing rather than a fan that would draw
     // overlapping triangles and look like inverted corners.
 
-    // Emit batched triangle mesh.
-    const win_alloc = dvui.currentWindow().lifo();
-    var b = dvui.Triangles.Builder.init(win_alloc, n, tris.items.len) catch return;
-    defer b.deinit(win_alloc);
+    // Build the triangle mesh and merge into the caller's master mesh.
+    var b = dvui.Triangles.Builder.init(allocator, n, tris.items.len) catch return;
+    defer b.deinit(allocator);
 
     const pma = Color.PMA.fromColor(color);
     for (verts_out) |p| {
@@ -822,7 +899,7 @@ fn earClipFill(allocator: std.mem.Allocator, pts: []const Point, color: Color) !
         });
     }
 
-    dvui.renderTriangles(b.build_unowned(), null) catch {};
+    try mesh.appendMesh(allocator, b.build_unowned());
 }
 
 // ---------------------------------------------------------------------------
