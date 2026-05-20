@@ -468,7 +468,7 @@ pub const ColorHash = struct {
     }
 };
 
-pub const ColMap = std.AutoArrayHashMap(ColorHash, u32);
+pub const ColMap = std.array_hash_map.Auto(ColorHash, u32);
 
 pub fn print_point(
     name: []const u8,

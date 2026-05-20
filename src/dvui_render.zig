@@ -25,6 +25,14 @@ pub const RenderOptions = struct {
     /// If set, overrides every flat-fill / stroke color.  Gradients are
     /// flattened to a single mid color when an override is active.
     color_override: ?Color = null,
+    /// If set, overrides only fill colors (does not affect strokes).
+    fill_color_override: ?Color = null,
+    /// If set, overrides only stroke colors (does not affect fills).
+    stroke_color_override: ?Color = null,
+    /// If set, overrides the stroke width for all stroked paths.
+    stroke_width_override: ?f32 = null,
+    /// When true, all fill operations are skipped (only strokes are drawn).
+    disable_fill: bool = false,
     /// Preserve TVG aspect ratio inside `rect` (letterbox).  When false the
     /// icon is stretched to fill the rect.
     keep_aspect: bool = true,

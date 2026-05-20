@@ -94,11 +94,11 @@ pub const DrawCommand = union(enum) {
 pub const ParseError = error{ EndOfStream, InvalidData, OutOfMemory };
 pub const ParseHeaderError = ParseError || error{ UnsupportedColorFormat, UnsupportedVersion };
 
-pub fn Parser(comptime Reader: type) type {
+pub fn Parser() type {
     return struct {
         const Self = @This();
 
-        reader: Reader,
+        reader: *std.Io.Reader,
         allocator: std.mem.Allocator,
         temp_buffer: std.array_list.AlignedManaged(u8, .@"16"),
         end_of_document: bool = false,
@@ -106,13 +106,13 @@ pub fn Parser(comptime Reader: type) type {
         header: Header,
         color_table: []tvg.Color,
 
-        pub fn init(allocator: std.mem.Allocator, reader: Reader) (Reader.Error || ParseHeaderError)!Self {
+        pub fn init(allocator: std.mem.Allocator, reader: *std.Io.Reader) (std.Io.Reader.Error || ParseHeaderError)!Self {
             var actual_magic_number: [2]u8 = undefined;
-            reader.readNoEof(&actual_magic_number) catch return error.InvalidData;
+            reader.readSliceAll(&actual_magic_number) catch return error.InvalidData;
             if (!std.mem.eql(u8, &actual_magic_number, &tvg.magic_number))
                 return error.InvalidData;
 
-            const version = reader.readByte() catch return error.InvalidData;
+            const version = reader.takeByte() catch return error.InvalidData;
 
             var self = Self{
                 .allocator = allocator,
@@ -134,21 +134,21 @@ pub fn Parser(comptime Reader: type) type {
                         if (@sizeOf(ScaleAndFlags) != 1) @compileError("Invalid range!");
                     }
 
-                    const scale_and_flags: ScaleAndFlags = @bitCast(try reader.readByte());
+                    const scale_and_flags: ScaleAndFlags = @bitCast(try reader.takeByte());
 
                     const scale: tvg.Scale = @enumFromInt(scale_and_flags.scale);
                     const color_encoding: tvg.ColorEncoding = @enumFromInt(scale_and_flags.color_encoding);
                     const range: tvg.Range = @enumFromInt(scale_and_flags.coordinate_range);
 
                     const width: u32 = switch (range) {
-                        .reduced => mapZeroToMax(try reader.readInt(u8, .little)),
-                        .default => mapZeroToMax(try reader.readInt(u16, .little)),
-                        .enhanced => std.math.cast(u32, mapZeroToMax(try reader.readInt(u32, .little))) orelse return error.InvalidData,
+                        .reduced => mapZeroToMax(try reader.takeInt(u8, .little)),
+                        .default => mapZeroToMax(try reader.takeInt(u16, .little)),
+                        .enhanced => std.math.cast(u32, mapZeroToMax(try reader.takeInt(u32, .little))) orelse return error.InvalidData,
                     };
                     const height: u32 = switch (range) {
-                        .reduced => mapZeroToMax(try reader.readInt(u8, .little)),
-                        .default => mapZeroToMax(try reader.readInt(u16, .little)),
-                        .enhanced => std.math.cast(u32, mapZeroToMax(try reader.readInt(u32, .little))) orelse return error.InvalidData,
+                        .reduced => mapZeroToMax(try reader.takeInt(u8, .little)),
+                        .default => mapZeroToMax(try reader.takeInt(u16, .little)),
+                        .enhanced => std.math.cast(u32, mapZeroToMax(try reader.takeInt(u32, .little))) orelse return error.InvalidData,
                     };
 
                     const color_count = try self.readUInt();
@@ -159,13 +159,13 @@ pub fn Parser(comptime Reader: type) type {
                     for (self.color_table) |*c| {
                         c.* = switch (color_encoding) {
                             .u8888 => tvg.Color{
-                                .r = @as(f32, @floatFromInt(try reader.readInt(u8, .little))) / 255.0,
-                                .g = @as(f32, @floatFromInt(try reader.readInt(u8, .little))) / 255.0,
-                                .b = @as(f32, @floatFromInt(try reader.readInt(u8, .little))) / 255.0,
-                                .a = @as(f32, @floatFromInt(try reader.readInt(u8, .little))) / 255.0,
+                                .r = @as(f32, @floatFromInt(try reader.takeInt(u8, .little))) / 255.0,
+                                .g = @as(f32, @floatFromInt(try reader.takeInt(u8, .little))) / 255.0,
+                                .b = @as(f32, @floatFromInt(try reader.takeInt(u8, .little))) / 255.0,
+                                .a = @as(f32, @floatFromInt(try reader.takeInt(u8, .little))) / 255.0,
                             },
                             .u565 => blk: {
-                                const rgb = try reader.readInt(u16, .little);
+                                const rgb = try reader.takeInt(u16, .little);
                                 break :blk tvg.Color{
                                     .r = @as(f32, @floatFromInt((rgb & 0x001F) >> 0)) / 31.0,
                                     .g = @as(f32, @floatFromInt((rgb & 0x07E0) >> 5)) / 63.0,
@@ -175,10 +175,10 @@ pub fn Parser(comptime Reader: type) type {
                             },
                             .f32 => tvg.Color{
                                 // TODO: Verify if this is platform independently correct:
-                                .r = @as(f32, @bitCast(try reader.readInt(u32, .little))),
-                                .g = @as(f32, @bitCast(try reader.readInt(u32, .little))),
-                                .b = @as(f32, @bitCast(try reader.readInt(u32, .little))),
-                                .a = @as(f32, @bitCast(try reader.readInt(u32, .little))),
+                                .r = @as(f32, @bitCast(try reader.takeInt(u32, .little))),
+                                .g = @as(f32, @bitCast(try reader.takeInt(u32, .little))),
+                                .b = @as(f32, @bitCast(try reader.takeInt(u32, .little))),
+                                .a = @as(f32, @bitCast(try reader.takeInt(u32, .little))),
                             },
                             .custom => return error.UnsupportedColorFormat,
                         };
@@ -258,7 +258,7 @@ pub fn Parser(comptime Reader: type) type {
             }
         }
 
-        fn readFillHeader(self: *Self, primary_style_type: tvg.StyleType, comptime T: type, comptime uninit_field: []const u8) (Reader.Error || ParseError)!ValAndSize(T) {
+        fn readFillHeader(self: *Self, primary_style_type: tvg.StyleType, comptime T: type, comptime uninit_field: []const u8) (std.Io.Reader.Error || ParseError)!ValAndSize(T) {
             checkInit(T, &[_][]const u8{ "style", uninit_field });
 
             var value: T = undefined;
@@ -269,7 +269,7 @@ pub fn Parser(comptime Reader: type) type {
             return ValAndSize(T){ .data = value, .count = count };
         }
 
-        fn readLineHeader(self: *Self, primary_style_type: tvg.StyleType, comptime T: type, comptime uninit_field: []const u8) (Reader.Error || ParseError)!ValAndSize(T) {
+        fn readLineHeader(self: *Self, primary_style_type: tvg.StyleType, comptime T: type, comptime uninit_field: []const u8) (std.Io.Reader.Error || ParseError)!ValAndSize(T) {
             checkInit(T, &[_][]const u8{ "style", "line_width", uninit_field });
 
             var value: T = undefined;
@@ -281,12 +281,12 @@ pub fn Parser(comptime Reader: type) type {
             return ValAndSize(T){ .data = value, .count = count };
         }
 
-        fn readOutlineFillHeader(self: *Self, primary_style_type: tvg.StyleType, comptime T: type, comptime uninit_field: []const u8) (Reader.Error || ParseError)!ValAndSize(T) {
+        fn readOutlineFillHeader(self: *Self, primary_style_type: tvg.StyleType, comptime T: type, comptime uninit_field: []const u8) (std.Io.Reader.Error || ParseError)!ValAndSize(T) {
             checkInit(T, &[_][]const u8{ "fill_style", "line_style", "line_width", uninit_field });
 
             var value: T = undefined;
 
-            const count_and_grad: CountAndStyleTag = @bitCast(try self.readByte());
+            const count_and_grad: CountAndStyleTag = @bitCast(try self.reader.takeByte());
 
             const count = count_and_grad.getCount();
 
@@ -297,11 +297,11 @@ pub fn Parser(comptime Reader: type) type {
             return ValAndSize(T){ .data = value, .count = count };
         }
 
-        pub fn next(self: *Self) (Reader.Error || ParseError)!?DrawCommand {
+        pub fn next(self: *Self) (std.Io.Reader.Error || ParseError)!?DrawCommand {
             if (self.end_of_document)
                 return null;
-            const command_byte = try self.reader.readByte();
-            const primary_style_type = std.meta.intToEnum(tvg.StyleType, @as(u2, @truncate(command_byte >> 6))) catch return error.InvalidData;
+            const command_byte = try self.reader.takeByte();
+            const primary_style_type: tvg.StyleType = @enumFromInt(@as(u2, @truncate(command_byte >> 6)));
             const command: tvg.Command = @enumFromInt(@as(u6, @truncate(command_byte)));
 
             return switch (command) {
@@ -474,7 +474,7 @@ pub fn Parser(comptime Reader: type) type {
                 has_line_width: bool,
                 padding1: u3 = 0,
             };
-            const tag: Tag = @bitCast(try self.readByte());
+            const tag: Tag = @bitCast(try self.reader.takeByte());
 
             const line_width: ?f32 = if (tag.has_line_width)
                 try self.readUnit()
@@ -505,7 +505,7 @@ pub fn Parser(comptime Reader: type) type {
                     },
                 }) },
                 .arc_circle => blk: {
-                    const flags = try self.readByte();
+                    const flags = try self.reader.takeByte();
                     break :blk PathNode{ .arc_circle = PathNode.NodeData(PathNode.ArcCircle).init(line_width, PathNode.ArcCircle{
                         .radius = try self.readUnit(),
                         .large_arc = (flags & 1) != 0,
@@ -517,7 +517,7 @@ pub fn Parser(comptime Reader: type) type {
                     }) };
                 },
                 .arc_ellipse => blk: {
-                    const flags = try self.readByte();
+                    const flags = try self.reader.takeByte();
                     break :blk PathNode{ .arc_ellipse = PathNode.NodeData(PathNode.ArcEllipse).init(line_width, PathNode.ArcEllipse{
                         .radius_x = try self.readUnit(),
                         .radius_y = try self.readUnit(),
@@ -577,7 +577,7 @@ pub fn Parser(comptime Reader: type) type {
             var byte_count: u8 = 0;
             var result: u32 = 0;
             while (true) {
-                const byte = self.reader.readByte() catch return error.InvalidData;
+                const byte = self.reader.takeByte() catch return error.InvalidData;
                 // check for too long *and* out of range in a single check
                 if (byte_count == 4 and (byte & 0xF0) != 0)
                     return error.InvalidData;
@@ -593,19 +593,15 @@ pub fn Parser(comptime Reader: type) type {
 
         fn readUnit(self: *const Self) !f32 {
             const unit: tvg.Unit = switch (self.header.coordinate_range) {
-                .reduced => @enumFromInt(try self.reader.readInt(i8, .little)),
-                .default => @enumFromInt(try self.reader.readInt(i16, .little)),
-                .enhanced => @enumFromInt(try self.reader.readInt(i32, .little)),
+                .reduced => @enumFromInt(try self.reader.takeInt(i8, .little)),
+                .default => @enumFromInt(try self.reader.takeInt(i16, .little)),
+                .enhanced => @enumFromInt(try self.reader.takeInt(i32, .little)),
             };
             return unit.toFloat(self.header.scale);
         }
 
-        fn readByte(self: *Self) !u8 {
-            return try self.reader.readByte();
-        }
-
         fn readU16(self: *Self) !u16 {
-            return try self.reader.readInt(u16, .little);
+            return try self.reader.takeInt(u16, .little);
         }
     };
 }

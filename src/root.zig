@@ -13,7 +13,7 @@ pub const tvg_from_svg = conversion.tvg_from_svg;
 
 pub const Color = tvg.Color;
 
-test "coverage" {
+test "Typecheck everything" {
+    // Force the compiler to typecheck these modules
     _ = .{ tvg_from_svg, renderStream, rendering, conversion };
-    std.log.warn("ok", .{});
 }

@@ -1,26 +1,16 @@
 .{
     .name = .svg2tvg,
     .fingerprint = 0x15ec8a64b919931e,
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .version = "0.0.0",
     .dependencies = .{
         .xml = .{
-            .url = "git+https://github.com/ianprime0509/zig-xml#c0bda4f35ea61cfb7845337adfa255c86c67fd13",
-            .hash = "xml-0.1.0-ZTbP35VkAgAp2cDlvsPuL7SWVZWwPg-V99LmVRSHbCtL",
+            .url = "git+https://github.com/ianprime0509/zig-xml#b97f2ab4868ae3cac9902b33a40d3f31d2df739d",
+            .hash = "xml-0.2.0-ZTbP3yI6AgB9Rpd2hQrueO63ib0Bm6mQiL_WB1t7JAmP",
         },
         .z2d = .{
-            .url = "git+https://github.com/vancluever/z2d#052c328e8b37d8daf162e374f847c435bec87c6d",
-            .hash = "z2d-0.8.0-j5P_HqfdFAAhoTDoRcm7Iix_8aszukCODbGuw2JxID-Z",
-            .lazy = true,
-        },
-        .icons = .{
-            .url = "git+https://github.com/nat3Github/zig-lib-icons.git#b7299b19fa11caa5be93ef49743d8fc31a4bf9a0",
-            .hash = "icons-0.1.0-iJxA-VrGMwAVIStBxqDPFeC3wdnANtYyDrNfYXNz95OW",
-            .lazy = true,
-        },
-        .dvui = .{
-            .url = "git+https://github.com/david-vanderson/dvui#v0.4.0",
-            .hash = "dvui-0.4.0-AQFJmQjU3wBQi8tkUTwHgtqWhhGlghgmBExQ-jqPRQBR",
+            .url = "git+https://github.com/vancluever/z2d#2f661fb5120f65e875bf6f37d082674c08858c7b",
+            .hash = "z2d-0.11.1-pre-j5P_HtbzDwADWjqO2TdR36XPyD-GdJRwRywnnhjalqej",
             .lazy = true,
         },
     },
@@ -28,6 +18,5 @@
         "build.zig",
         "build.zig.zon",
         "src",
-        "update.zig",
     },
 }

@@ -709,14 +709,14 @@ pub fn write_path(
             for (seg.commands, node_dup) |n, *nd| {
                 nd.* = n;
                 switch (n) {
-                    .line => |_| nd.line.line_width = stroke_width,
-                    .horiz => |_| nd.horiz.line_width = stroke_width,
-                    .vert => |_| nd.vert.line_width = stroke_width,
-                    .bezier => |_| nd.bezier.line_width = stroke_width,
-                    .arc_circle => |_| nd.arc_circle.line_width = stroke_width,
-                    .arc_ellipse => |_| nd.arc_ellipse.line_width = stroke_width,
-                    .close => |_| nd.close.line_width = stroke_width,
-                    .quadratic_bezier => |_| nd.quadratic_bezier.line_width = stroke_width,
+                    .line => nd.line.line_width = stroke_width,
+                    .horiz => nd.horiz.line_width = stroke_width,
+                    .vert => nd.vert.line_width = stroke_width,
+                    .bezier => nd.bezier.line_width = stroke_width,
+                    .arc_circle => nd.arc_circle.line_width = stroke_width,
+                    .arc_ellipse => nd.arc_ellipse.line_width = stroke_width,
+                    .close => nd.close.line_width = stroke_width,
+                    .quadratic_bezier => nd.quadratic_bezier.line_width = stroke_width,
                 }
             }
             seg.commands = node_dup;
@@ -731,13 +731,16 @@ pub fn parse_colors_and_svg(popts: *const @This(), gpa: Allocator, svg_bytes: []
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const alloc = arena.allocator();
-    var fbuffs = std.io.fixedBufferStream(svg_bytes);
-    var xml_res = xml.streamingDocument(alloc, fbuffs.reader());
-    var reader = xml_res.reader(alloc, .{});
-    var colormap = ColMap.init(alloc);
+
+    var in: std.Io.Reader = .fixed(svg_bytes);
+    var readerImpl: xml.Reader.Streaming = .init(alloc, &in, .{});
+    defer readerImpl.deinit();
+    var reader = &readerImpl.interface;
+
+    var colormap: ColMap = .empty;
 
     var colortable_len: u32 = 0;
-    try colormap.put(.fromColor(popts.default_color.col), colortable_len);
+    try colormap.put(alloc, .fromColor(popts.default_color.col), colortable_len);
     colortable_len += 1;
     var svg = Svg{};
 
@@ -754,7 +757,7 @@ pub fn parse_colors_and_svg(popts: *const @This(), gpa: Allocator, svg_bytes: []
             .element_start => {
                 const element_name = reader.elementNameNs();
                 const element_tag = element_name.local;
-                const att_count = reader.reader.attributeCount();
+                const att_count = reader.attributeCount();
 
                 if (std.mem.eql(u8, "svg", element_tag)) {
                     const att_names = try alloc.alloc([]const u8, att_count);
@@ -774,7 +777,7 @@ pub fn parse_colors_and_svg(popts: *const @This(), gpa: Allocator, svg_bytes: []
                             const maybe_key = ColorHash.get_hash_key(&col);
                             if (maybe_key) |key| {
                                 if (colormap.getKey(key) == null) {
-                                    try colormap.put(key, colortable_len);
+                                    try colormap.put(alloc, key, colortable_len);
                                     colortable_len += 1;
                                 }
                             }
@@ -804,16 +807,15 @@ pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]con
     const colors, const svg = try parse_colors_and_svg(&popts, gpa, svg_bytes);
     defer gpa.free(colors);
     popts.color_table = colors;
-    var writer = std.array_list.Managed(u8).init(gpa);
+    var writer: std.Io.Writer.Allocating = .init(gpa);
     defer writer.deinit();
 
-    var builder = tvg.builder.create(writer.writer());
+    var builder = tvg.builder.create(&writer.writer);
 
-    var fbuffs = std.io.fixedBufferStream(svg_bytes);
-    var xml_res = xml.streamingDocument(gpa, fbuffs.reader());
-    defer xml_res.deinit();
-    var reader = xml_res.reader(gpa, .{});
-    defer reader.deinit();
+    var in: std.Io.Reader = .fixed(svg_bytes);
+    var readerImpl: xml.Reader.Streaming = .init(gpa, &in, .{});
+    defer readerImpl.deinit();
+    var reader = &readerImpl.interface;
 
     const sw: u32 = @intFromFloat(@round(svg.width.?));
     const sh: u32 = @intFromFloat(@round(svg.height.?));
@@ -865,7 +867,7 @@ pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]con
                     const top_mut = stack.top_mut().?;
                     var maker = NodeMaker.init(garbage_alloc, svg);
 
-                    const att_count = reader.reader.attributeCount();
+                    const att_count = reader.attributeCount();
                     const att_names = try garbage_alloc.alloc([]const u8, att_count);
                     const att_vals = try garbage_alloc.alloc([]const u8, att_count);
 
