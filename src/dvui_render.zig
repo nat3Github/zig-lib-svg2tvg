@@ -208,37 +208,37 @@ fn renderCommand(
             try fillPolygonTvg(allocator, mesh, fp.vertices, fp.style, color_table, xf, opts);
         },
         .fill_rectangles => |fr| {
-            const col = resolveStyleColor(fr.style, color_table, opts);
+            const col = resolveStyleSource(fr.style, color_table, opts, xf);
             for (fr.rectangles) |r| try fillTvgRect(allocator, mesh, r, col, xf);
         },
         .fill_path => |fp| {
             try fillPathTvg(allocator, mesh, fp.path, fp.style, color_table, xf, opts);
         },
         .draw_lines => |dl| {
-            const col = resolveStyleColor(dl.style, color_table, opts);
+            const col = resolveStyleSource(dl.style, color_table, opts, xf);
             const thickness = dl.line_width * xf.meanScale();
             for (dl.lines) |ln| try strokeLine(allocator, mesh, xf.apply(ln.start), xf.apply(ln.end), col, thickness);
         },
         .draw_line_loop => |ls| {
-            const col = resolveStyleColor(ls.style, color_table, opts);
+            const col = resolveStyleSource(ls.style, color_table, opts, xf);
             try strokePolylineTvg(allocator, mesh, ls.vertices, true, ls.line_width, col, xf);
         },
         .draw_line_strip => |ls| {
-            const col = resolveStyleColor(ls.style, color_table, opts);
+            const col = resolveStyleSource(ls.style, color_table, opts, xf);
             try strokePolylineTvg(allocator, mesh, ls.vertices, false, ls.line_width, col, xf);
         },
         .draw_line_path => |dp| {
-            const col = resolveStyleColor(dp.style, color_table, opts);
+            const col = resolveStyleSource(dp.style, color_table, opts, xf);
             try strokePathTvg(allocator, mesh, dp.path, dp.line_width, col, xf);
         },
         .outline_fill_polygon => |o| {
             try fillPolygonTvg(allocator, mesh, o.vertices, o.fill_style, color_table, xf, opts);
-            const stroke_col = resolveStyleColor(o.line_style, color_table, opts);
+            const stroke_col = resolveStyleSource(o.line_style, color_table, opts, xf);
             try strokePolylineTvg(allocator, mesh, o.vertices, true, o.line_width, stroke_col, xf);
         },
         .outline_fill_rectangles => |o| {
-            const fill_col = resolveStyleColor(o.fill_style, color_table, opts);
-            const stroke_col = resolveStyleColor(o.line_style, color_table, opts);
+            const fill_col = resolveStyleSource(o.fill_style, color_table, opts, xf);
+            const stroke_col = resolveStyleSource(o.line_style, color_table, opts, xf);
             const thickness = o.line_width * xf.meanScale();
             for (o.rectangles) |r| {
                 try fillTvgRect(allocator, mesh, r, fill_col, xf);
@@ -247,7 +247,7 @@ fn renderCommand(
         },
         .outline_fill_path => |o| {
             try fillPathTvg(allocator, mesh, o.path, o.fill_style, color_table, xf, opts);
-            try strokePathTvg(allocator, mesh, o.path, o.line_width, resolveStyleColor(o.line_style, color_table, opts), xf);
+            try strokePathTvg(allocator, mesh, o.path, o.line_width, resolveStyleSource(o.line_style, color_table, opts, xf), xf);
         },
     }
 }
@@ -265,14 +265,91 @@ fn tvgColorToDvui(c: tvg.Color) Color {
     };
 }
 
-/// Resolve a TVG `Style` to a single dvui `Color`.  Gradients collapse to the
-/// midpoint color — a real gradient renderer is a later upgrade.  Override
-/// short-circuits.
-fn resolveStyleColor(style: tvg.Style, color_table: []const tvg.Color, opts: RenderOptions) Color {
-    if (opts.color_override) |c| return c;
+/// A position-keyed color source used to colour every vertex of a fill or
+/// stroke band.  Gradients are sampled per-vertex (Gouraud-shaded by the
+/// GPU between vertices — close enough to a true bilinear gradient at icon
+/// resolutions).  Override short-circuits gradients to a flat color.
+const ColorSource = union(enum) {
+    flat: Color.PMA,
+    linear: struct {
+        c0: Color,
+        c1: Color,
+        p0: Point, // physical pixels
+        p1: Point,
+    },
+    radial: struct {
+        c0: Color,
+        c1: Color,
+        center: Point,
+        edge: Point,
+    },
+
+    fn sampleColor(self: ColorSource, p: Point) Color {
+        return switch (self) {
+            .flat => |pma| pma.toColor(),
+            .linear => |g| blk: {
+                const dx = g.p1.x - g.p0.x;
+                const dy = g.p1.y - g.p0.y;
+                const dlen_sq = dx * dx + dy * dy;
+                if (dlen_sq < 1e-9) break :blk g.c0;
+                const t = math.clamp(((p.x - g.p0.x) * dx + (p.y - g.p0.y) * dy) / dlen_sq, 0, 1);
+                break :blk lerpColor(g.c0, g.c1, t);
+            },
+            .radial => |g| blk: {
+                const rdx = g.edge.x - g.center.x;
+                const rdy = g.edge.y - g.center.y;
+                const radius = @sqrt(rdx * rdx + rdy * rdy);
+                if (radius < 1e-9) break :blk g.c0;
+                const dx = p.x - g.center.x;
+                const dy = p.y - g.center.y;
+                const t = math.clamp(@sqrt(dx * dx + dy * dy) / radius, 0, 1);
+                break :blk lerpColor(g.c0, g.c1, t);
+            },
+        };
+    }
+
+    fn sample(self: ColorSource, p: Point) Color.PMA {
+        return switch (self) {
+            .flat => |pma| pma,
+            else => Color.PMA.fromColor(self.sampleColor(p)),
+        };
+    }
+};
+
+fn lerpU8(a: u8, b: u8, t: f32) u8 {
+    const af = @as(f32, @floatFromInt(a));
+    const bf = @as(f32, @floatFromInt(b));
+    return @intFromFloat(math.clamp(af + (bf - af) * t, 0, 255));
+}
+
+fn lerpColor(a: Color, b: Color, t: f32) Color {
+    return .{
+        .r = lerpU8(a.r, b.r, t),
+        .g = lerpU8(a.g, b.g, t),
+        .b = lerpU8(a.b, b.b, t),
+        .a = lerpU8(a.a, b.a, t),
+    };
+}
+
+/// Build a `ColorSource` from a TVG style.  Override forces flat.  Gradient
+/// endpoints are transformed into physical pixel space so per-vertex
+/// sampling is a single dot product / distance.
+fn resolveStyleSource(style: tvg.Style, color_table: []const tvg.Color, opts: RenderOptions, xf: Transform) ColorSource {
+    if (opts.color_override) |c| return .{ .flat = Color.PMA.fromColor(c) };
     return switch (style) {
-        .flat => |idx| tvgColorToDvui(color_table[idx]),
-        .linear, .radial => |g| tvgColorToDvui(tvg.Color.lerp(color_table[g.color_0], color_table[g.color_1], 0.5)),
+        .flat => |idx| .{ .flat = Color.PMA.fromColor(tvgColorToDvui(color_table[idx])) },
+        .linear => |g| .{ .linear = .{
+            .c0 = tvgColorToDvui(color_table[g.color_0]),
+            .c1 = tvgColorToDvui(color_table[g.color_1]),
+            .p0 = xf.apply(g.point_0),
+            .p1 = xf.apply(g.point_1),
+        } },
+        .radial => |g| .{ .radial = .{
+            .c0 = tvgColorToDvui(color_table[g.color_0]),
+            .c1 = tvgColorToDvui(color_table[g.color_1]),
+            .center = xf.apply(g.point_0),
+            .edge = xf.apply(g.point_1),
+        } },
     };
 }
 
@@ -280,31 +357,49 @@ fn resolveStyleColor(style: tvg.Style, color_table: []const tvg.Color, opts: Ren
 // Fill / stroke primitives in TVG space
 // ---------------------------------------------------------------------------
 
-fn fillTvgRect(alloc: std.mem.Allocator, mesh: *MeshBuilder, r: tvg.Rectangle, color: Color, xf: Transform) !void {
-    var pb = dvui.Path.Builder.init(alloc);
-    defer pb.deinit();
-    pb.addPoint(xf.applyXY(r.x, r.y));
-    pb.addPoint(xf.applyXY(r.x + r.width, r.y));
-    pb.addPoint(xf.applyXY(r.x + r.width, r.y + r.height));
-    pb.addPoint(xf.applyXY(r.x, r.y + r.height));
-    var tri = pb.build().fillConvexTriangles(alloc, .{ .color = color }) catch return;
-    defer tri.deinit(alloc);
-    try mesh.appendMesh(tri);
-}
-
-fn strokeTvgRect(alloc: std.mem.Allocator, mesh: *MeshBuilder, r: tvg.Rectangle, color: Color, thickness: f32, xf: Transform) !void {
+fn fillTvgRect(_: std.mem.Allocator, mesh: *MeshBuilder, r: tvg.Rectangle, source: ColorSource, xf: Transform) !void {
     const pts = [_]Point{
         xf.applyXY(r.x, r.y),
         xf.applyXY(r.x + r.width, r.y),
         xf.applyXY(r.x + r.width, r.y + r.height),
         xf.applyXY(r.x, r.y + r.height),
     };
-    try strokePolylineRoundJoined(alloc, mesh, &pts, true, thickness, color);
+    try emitConvexFan(mesh, &pts, source);
 }
 
-fn strokeLine(alloc: std.mem.Allocator, mesh: *MeshBuilder, p0: Point, p1: Point, color: Color, thickness: f32) !void {
+fn strokeTvgRect(_: std.mem.Allocator, mesh: *MeshBuilder, r: tvg.Rectangle, source: ColorSource, thickness: f32, xf: Transform) !void {
+    const pts = [_]Point{
+        xf.applyXY(r.x, r.y),
+        xf.applyXY(r.x + r.width, r.y),
+        xf.applyXY(r.x + r.width, r.y + r.height),
+        xf.applyXY(r.x, r.y + r.height),
+    };
+    try strokePolylineRoundJoined(mesh, &pts, true, thickness, source);
+}
+
+fn strokeLine(_: std.mem.Allocator, mesh: *MeshBuilder, p0: Point, p1: Point, source: ColorSource, thickness: f32) !void {
     const pts = [_]Point{ p0, p1 };
-    try strokePolylineRoundJoined(alloc, mesh, &pts, false, thickness, color);
+    try strokePolylineRoundJoined(mesh, &pts, false, thickness, source);
+}
+
+/// Fan-triangulate a convex polygon directly into the mesh.  Each vertex
+/// gets a per-position color from `source`, giving gradient fills via
+/// Gouraud shading.
+fn emitConvexFan(mesh: *MeshBuilder, pts: []const Point, source: ColorSource) !void {
+    if (pts.len < 3) return;
+    try mesh.vtx.ensureUnusedCapacity(mesh.alloc, pts.len);
+    try mesh.idx.ensureUnusedCapacity(mesh.alloc, (pts.len - 2) * 3);
+    const base: dvui.Vertex.Index = @intCast(mesh.vtx.items.len);
+    for (pts) |p| {
+        mesh.vtx.appendAssumeCapacity(.{ .pos = p, .col = source.sample(p) });
+        updateBounds(mesh, p);
+    }
+    var i: u32 = 1;
+    while (i < pts.len - 1) : (i += 1) {
+        mesh.idx.appendAssumeCapacity(base);
+        mesh.idx.appendAssumeCapacity(@intCast(@as(u32, base) + i));
+        mesh.idx.appendAssumeCapacity(@intCast(@as(u32, base) + i + 1));
+    }
 }
 
 /// Spec-compliant-ish stroke with round joins AND round caps — the approach
@@ -328,26 +423,20 @@ fn strokeLine(alloc: std.mem.Allocator, mesh: *MeshBuilder, p0: Point, p1: Point
 /// linecap=round`.  Doubles the triangle count vs a single combined
 /// stroke, but output is cached per icon so the cost is one-shot.
 fn strokePolylineRoundJoined(
-    _: std.mem.Allocator,
     mesh: *MeshBuilder,
     pts: []const Point,
     closed: bool,
     thickness: f32,
-    color: Color,
+    source: ColorSource,
 ) !void {
     if (pts.len < 2) return;
     const radius = thickness * 0.5;
     if (radius <= 0) return;
     const n = pts.len;
-    const pma = Color.PMA.fromColor(color);
 
-    // Estimate to grow once instead of N times.  Each edge: 4 verts + 6 idx.
-    // Each disc: (1 + DISC_RIM) verts + DISC_RIM*3 idx.
     const edge_count: usize = if (closed) n else n - 1;
     const v_edges = edge_count * 4;
     const i_edges = edge_count * 6;
-    const disc_rim = comptime discSegmentsForRadius(0); // worst case lookup
-    _ = disc_rim;
     try mesh.vtx.ensureUnusedCapacity(mesh.alloc, v_edges + n * 33);
     try mesh.idx.ensureUnusedCapacity(mesh.alloc, i_edges + n * 32 * 3);
 
@@ -362,49 +451,47 @@ fn strokePolylineRoundJoined(
         const len_sq = dx * dx + dy * dy;
         if (len_sq < 1e-12) continue;
         const inv_len = 1.0 / @sqrt(len_sq);
-        // Perpendicular = (-dy, dx) normalised, scaled by radius.
         const nx = -dy * inv_len * radius;
         const ny = dx * inv_len * radius;
-        emitEdgeQuad(mesh, a, b, nx, ny, pma);
+        emitEdgeQuad(mesh, a, b, nx, ny, source);
     }
 
-    // 2. Round cap/join discs at every vertex.  Each is a fan with N rim
-    //    segments chosen from a tiny step table — N=8 below ~3px radius,
-    //    rising to 32 for very thick strokes.
+    // 2. Round cap/join discs at every vertex.
     const rim = discSegmentsForRadius(radius);
     for (pts) |p| {
-        emitDiscFan(mesh, p, radius, rim, pma);
+        emitDiscFan(mesh, p, radius, rim, source);
     }
 }
 
-/// Emit a butt-cap stroke quad directly into the mesh.
+/// Emit a butt-cap stroke quad directly into the mesh.  Per-vertex colour
+/// from `source` so gradient strokes work without a separate code path.
 fn emitEdgeQuad(
     mesh: *MeshBuilder,
     a: Point,
     b: Point,
     nx: f32,
     ny: f32,
-    pma: Color.PMA,
+    source: ColorSource,
 ) void {
     const base: dvui.Vertex.Index = @intCast(mesh.vtx.items.len);
-    const v0: dvui.Vertex = .{ .pos = .{ .x = a.x - nx, .y = a.y - ny }, .col = pma };
-    const v1: dvui.Vertex = .{ .pos = .{ .x = a.x + nx, .y = a.y + ny }, .col = pma };
-    const v2: dvui.Vertex = .{ .pos = .{ .x = b.x + nx, .y = b.y + ny }, .col = pma };
-    const v3: dvui.Vertex = .{ .pos = .{ .x = b.x - nx, .y = b.y - ny }, .col = pma };
-    mesh.vtx.appendAssumeCapacity(v0);
-    mesh.vtx.appendAssumeCapacity(v1);
-    mesh.vtx.appendAssumeCapacity(v2);
-    mesh.vtx.appendAssumeCapacity(v3);
+    const p0: Point = .{ .x = a.x - nx, .y = a.y - ny };
+    const p1: Point = .{ .x = a.x + nx, .y = a.y + ny };
+    const p2: Point = .{ .x = b.x + nx, .y = b.y + ny };
+    const p3: Point = .{ .x = b.x - nx, .y = b.y - ny };
+    mesh.vtx.appendAssumeCapacity(.{ .pos = p0, .col = source.sample(p0) });
+    mesh.vtx.appendAssumeCapacity(.{ .pos = p1, .col = source.sample(p1) });
+    mesh.vtx.appendAssumeCapacity(.{ .pos = p2, .col = source.sample(p2) });
+    mesh.vtx.appendAssumeCapacity(.{ .pos = p3, .col = source.sample(p3) });
     mesh.idx.appendAssumeCapacity(base + 0);
     mesh.idx.appendAssumeCapacity(base + 1);
     mesh.idx.appendAssumeCapacity(base + 2);
     mesh.idx.appendAssumeCapacity(base + 0);
     mesh.idx.appendAssumeCapacity(base + 2);
     mesh.idx.appendAssumeCapacity(base + 3);
-    updateBounds(mesh, v0.pos);
-    updateBounds(mesh, v1.pos);
-    updateBounds(mesh, v2.pos);
-    updateBounds(mesh, v3.pos);
+    updateBounds(mesh, p0);
+    updateBounds(mesh, p1);
+    updateBounds(mesh, p2);
+    updateBounds(mesh, p3);
 }
 
 /// Emit a filled disc as a triangle fan directly into the mesh.
@@ -413,12 +500,11 @@ fn emitDiscFan(
     center: Point,
     radius: f32,
     rim_count: u32,
-    pma: Color.PMA,
+    source: ColorSource,
 ) void {
     if (rim_count < 3) return;
     const base: dvui.Vertex.Index = @intCast(mesh.vtx.items.len);
-    const center_v: dvui.Vertex = .{ .pos = center, .col = pma };
-    mesh.vtx.appendAssumeCapacity(center_v);
+    mesh.vtx.appendAssumeCapacity(.{ .pos = center, .col = source.sample(center) });
     updateBounds(mesh, center);
     const step = math.pi * 2.0 / @as(f32, @floatFromInt(rim_count));
     var k: u32 = 0;
@@ -428,9 +514,8 @@ fn emitDiscFan(
             .x = center.x + radius * @cos(theta),
             .y = center.y + radius * @sin(theta),
         };
-        mesh.vtx.appendAssumeCapacity(.{ .pos = pos, .col = pma });
+        mesh.vtx.appendAssumeCapacity(.{ .pos = pos, .col = source.sample(pos) });
         updateBounds(mesh, pos);
-        // Triangle: center, rim[k], rim[k+1 mod rim_count]
         const rim_a: dvui.Vertex.Index = @intCast(@as(u32, base) + 1 + k);
         const rim_b: dvui.Vertex.Index = @intCast(@as(u32, base) + 1 + ((k + 1) % rim_count));
         mesh.idx.appendAssumeCapacity(base);
@@ -467,7 +552,7 @@ fn fillPolygonTvg(
     opts: RenderOptions,
 ) !void {
     if (vertices.len < 3) return;
-    const color = resolveStyleColor(style, color_table, opts);
+    const color = resolveStyleSource(style, color_table, opts, xf);
 
     // Project to physical pixels first; the polygon may be concave so we
     // run an ear-clip tessellation on the result.
@@ -484,7 +569,7 @@ fn strokePolylineTvg(
     vertices: []const tvg.Point,
     closed: bool,
     line_width: f32,
-    color: Color,
+    source: ColorSource,
     xf: Transform,
 ) !void {
     if (vertices.len < 2) return;
@@ -492,7 +577,7 @@ fn strokePolylineTvg(
     const pts = try allocator.alloc(Point, vertices.len);
     defer allocator.free(pts);
     for (vertices, 0..) |v, i| pts[i] = xf.apply(v);
-    try strokePolylineRoundJoined(allocator, mesh, pts, closed, thickness, color);
+    try strokePolylineRoundJoined(mesh, pts, closed, thickness, source);
 }
 
 // ---------------------------------------------------------------------------
@@ -746,7 +831,7 @@ fn fillPathTvg(
     xf: Transform,
     opts: RenderOptions,
 ) !void {
-    const color = resolveStyleColor(style, color_table, opts);
+    const color = resolveStyleSource(style, color_table, opts, xf);
     var pts = std.ArrayList(Point){};
     defer pts.deinit(allocator);
     for (path.segments) |seg| {
@@ -764,7 +849,7 @@ fn strokePathTvg(
     mesh: *MeshBuilder,
     path: tvg.Path,
     line_width: f32,
-    color: Color,
+    source: ColorSource,
     xf: Transform,
 ) !void {
     const thickness = line_width * xf.meanScale();
@@ -778,7 +863,7 @@ fn strokePathTvg(
         if (closed) stripTrailingDuplicatesOfFirst(&pts);
         collapseRunDuplicates(&pts);
         if (pts.items.len < 2) continue;
-        try strokePolylineRoundJoined(allocator, mesh, pts.items, closed, thickness, color);
+        try strokePolylineRoundJoined(mesh, pts.items, closed, thickness, source);
     }
 }
 
@@ -793,20 +878,16 @@ fn fillPolygonPhysical(
     allocator: std.mem.Allocator,
     mesh: *MeshBuilder,
     pts: []const Point,
-    color: Color,
+    source: ColorSource,
     fade: f32,
 ) !void {
+    _ = fade;
     if (pts.len < 3) return;
     if (isConvex(pts)) {
-        var pb = dvui.Path.Builder.init(allocator);
-        defer pb.deinit();
-        for (pts) |p| pb.addPoint(p);
-        var tri = pb.build().fillConvexTriangles(allocator, .{ .color = color, .fade = fade }) catch return;
-        defer tri.deinit(allocator);
-        try mesh.appendMesh(tri);
+        try emitConvexFan(mesh, pts, source);
         return;
     }
-    try earClipFill(allocator, mesh, pts, color);
+    try earClipFill(allocator, mesh, pts, source);
 }
 
 fn isConvex(pts: []const Point) bool {
@@ -901,7 +982,7 @@ fn collinearEpsilon(pts: []const Point) f32 {
 ///     always makes progress and degenerate triangles don't get emitted.
 ///   * Uses signed-area sign to normalise winding regardless of Y direction
 ///     — `triangleArea2 > 0` then consistently identifies convex corners.
-fn earClipFill(allocator: std.mem.Allocator, mesh: *MeshBuilder, pts: []const Point, color: Color) !void {
+fn earClipFill(allocator: std.mem.Allocator, mesh: *MeshBuilder, pts: []const Point, source: ColorSource) !void {
     const n = pts.len;
     if (n < 3) return;
 
@@ -990,25 +1071,19 @@ fn earClipFill(allocator: std.mem.Allocator, mesh: *MeshBuilder, pts: []const Po
     // intersection, etc.) — emit nothing rather than a fan that would draw
     // overlapping triangles and look like inverted corners.
 
-    // Build the triangle mesh and merge into the caller's master mesh.
-    var b = dvui.Triangles.Builder.init(allocator, n, tris.items.len) catch return;
-    defer b.deinit(allocator);
-
-    const pma = Color.PMA.fromColor(color);
+    // Append straight into the master mesh.  Per-vertex colour sampled
+    // from `source` — gradients shade across the ear-clipped triangulation
+    // via Gouraud interpolation.
+    try mesh.vtx.ensureUnusedCapacity(mesh.alloc, n);
+    try mesh.idx.ensureUnusedCapacity(mesh.alloc, tris.items.len);
+    const base: dvui.Vertex.Index = @intCast(mesh.vtx.items.len);
     for (verts_out) |p| {
-        b.appendVertex(.{ .pos = p, .col = pma });
+        mesh.vtx.appendAssumeCapacity(.{ .pos = p, .col = source.sample(p) });
+        updateBounds(mesh, p);
     }
-    const Index = dvui.Vertex.Index;
-    var t: usize = 0;
-    while (t + 2 < tris.items.len) : (t += 3) {
-        b.appendTriangles(&.{
-            @as(Index, @intCast(tris.items[t])),
-            @as(Index, @intCast(tris.items[t + 1])),
-            @as(Index, @intCast(tris.items[t + 2])),
-        });
+    for (tris.items) |i_idx| {
+        mesh.idx.appendAssumeCapacity(@intCast(@as(u32, base) + i_idx));
     }
-
-    try mesh.appendMesh(b.build_unowned());
 }
 
 // ---------------------------------------------------------------------------

@@ -21,28 +21,50 @@ comptime {
     std.debug.assert(@hasDecl(SDLBackend, "SDLBackend"));
 }
 
-// --- Icon set: every feather icon -------------------------------------------
+// --- Icon sets --------------------------------------------------------------
+//
+// Every flavor of feather/lucide/entypo/heroicons is enumerated at compile
+// time into a (bytes, name) pair list.  At runtime `active_set` picks
+// which list the grid renders.  `entypo` is dvui's default icon set.
 
-// Icon set selection — flip ICON_SET to `icons.tvg.lucide` (or .feather, etc.)
-// at compile time.  Lucide has ~1600 icons; comptime iteration needs a higher
-// branch quota.
-const ICON_SET = icons.tvg.lucide;
+const IconSet = enum { entypo, feather, lucide, heroicons_outline, heroicons_solid };
 
-const ICON_LIST = blk: {
-    @setEvalBranchQuota(200_000);
-    const decls = @typeInfo(ICON_SET).@"struct".decls;
-    var arr: [decls.len][]const u8 = undefined;
-    for (decls, 0..) |d, i| arr[i] = @field(ICON_SET, d.name);
-    break :blk arr;
+const IconList = struct {
+    bytes: []const []const u8,
+    names: []const []const u8,
 };
 
-const ICON_NAMES = blk: {
+fn buildList(comptime ns: type) IconList {
     @setEvalBranchQuota(200_000);
-    const decls = @typeInfo(ICON_SET).@"struct".decls;
-    var arr: [decls.len][]const u8 = undefined;
-    for (decls, 0..) |d, i| arr[i] = d.name;
-    break :blk arr;
-};
+    const decls = @typeInfo(ns).@"struct".decls;
+    var bytes: [decls.len][]const u8 = undefined;
+    var names: [decls.len][]const u8 = undefined;
+    for (decls, 0..) |d, i| {
+        bytes[i] = @field(ns, d.name);
+        names[i] = d.name;
+    }
+    const bytes_final = bytes;
+    const names_final = names;
+    return .{ .bytes = &bytes_final, .names = &names_final };
+}
+
+const ENTYPO = buildList(icons.tvg.entypo);
+const FEATHER = buildList(icons.tvg.feather);
+const LUCIDE = buildList(icons.tvg.lucide);
+const HERO_O = buildList(icons.tvg.heroicons.outline);
+const HERO_S = buildList(icons.tvg.heroicons.solid);
+
+fn listFor(set: IconSet) IconList {
+    return switch (set) {
+        .entypo => ENTYPO,
+        .feather => FEATHER,
+        .lucide => LUCIDE,
+        .heroicons_outline => HERO_O,
+        .heroicons_solid => HERO_S,
+    };
+}
+
+var active_set: IconSet = .entypo;
 
 const GRID_COLS: usize = 8;
 const CELL_SIZE: f32 = 72; // logical px per cell
@@ -295,10 +317,26 @@ fn gui_frame() !bool {
         });
         defer bar.deinit();
 
-        dvui.label(@src(), "svg2tvg demo  |  icons: {d}  |  hover: {s}", .{
-            ICON_LIST.len,
+        const list = listFor(active_set);
+        dvui.label(@src(), "svg2tvg demo  |  set: {s}  ({d})  |  hover: {s}", .{
+            @tagName(active_set),
+            list.bytes.len,
             hovered_name orelse "-",
         }, .{});
+
+        // Icon-set selector buttons.
+        inline for (std.meta.tags(IconSet), 0..) |s, i| {
+            if (dvui.button(@src(), @tagName(s), .{}, .{ .id_extra = i })) {
+                if (active_set != s) {
+                    active_set = s;
+                    // Old entries refer to OTHER sets' byte pointers; let the
+                    // per-frame stale sweep collect them.  Reset bench too so
+                    // the numbers reflect the new set.
+                    bench_dvui.reset();
+                    bench_z2d.reset();
+                }
+            }
+        }
 
         dvui.label(@src(), "  dvui_render  initial {d:.1} us x {d}  cached {d:.1} us x {d}", .{
             bench_dvui.initialAvgUs(),
@@ -336,7 +374,8 @@ fn gui_frame() !bool {
     }, .{ .expand = .both });
     defer scroll.deinit();
 
-    const total_rows = (ICON_LIST.len + GRID_COLS - 1) / GRID_COLS;
+    const active_len = listFor(active_set).bytes.len;
+    const total_rows = (active_len + GRID_COLS - 1) / GRID_COLS;
     const total_h: f32 = @as(f32, @floatFromInt(total_rows)) * CELL_SIZE + 24;
 
     var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{
@@ -406,7 +445,8 @@ fn renderColumn(id_extra: usize, method: Method, title: []const u8, keep_running
         return;
     }
 
-    const total_rows = (ICON_LIST.len + GRID_COLS - 1) / GRID_COLS;
+    const list = listFor(active_set);
+    const total_rows = (list.bytes.len + GRID_COLS - 1) / GRID_COLS;
     const grid_h: f32 = @as(f32, @floatFromInt(total_rows)) * CELL_SIZE;
     const grid_w: f32 = @as(f32, @floatFromInt(GRID_COLS)) * CELL_SIZE;
 
@@ -427,7 +467,7 @@ fn renderColumn(id_extra: usize, method: Method, title: []const u8, keep_running
         break :blk dvui.Picture.start(rs.r);
     };
 
-    for (ICON_LIST, 0..) |bytes, i| {
+    for (list.bytes, 0..) |bytes, i| {
         const c: f32 = @floatFromInt(i % GRID_COLS);
         const r: f32 = @floatFromInt(i / GRID_COLS);
         const cell = dvui.Rect.Physical{
@@ -445,7 +485,7 @@ fn renderColumn(id_extra: usize, method: Method, title: []const u8, keep_running
         // FloatingTooltipWidget.zig:94).  Whichever cell the mouse is over
         // sets `hovered_name`; the top bar displays it.
         if (cell.contains(dvui.currentWindow().mouse_pt)) {
-            hovered_name = ICON_NAMES[i];
+            hovered_name = list.names[i];
         }
     }
 
@@ -619,11 +659,9 @@ fn colorAsF32(c: dvui.Color) svg2tvg.Color {
 
 fn lookupSingleIconBytes() ?[]const u8 {
     const name = single_icon orelse return null;
-    @setEvalBranchQuota(200_000);
-    inline for (@typeInfo(ICON_SET).@"struct".decls) |d| {
-        if (std.mem.eql(u8, d.name, name)) {
-            return @field(ICON_SET, d.name);
-        }
+    const list = listFor(active_set);
+    for (list.names, 0..) |n, i| {
+        if (std.mem.eql(u8, n, name)) return list.bytes[i];
     }
     return null;
 }
