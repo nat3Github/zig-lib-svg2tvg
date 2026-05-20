@@ -4,6 +4,7 @@ pub const z2d = @import("z2d");
 pub const svg_ut = @import("svg-util.zig");
 const tinyvg2 = @import("tinyvg/tinyvg.zig");
 pub const tvg = tinyvg2;
+pub const tvg_parsing = @import("tinyvg/parsing.zig");
 pub const rendering = @import("rendering.zig");
 pub const conversion = @import("conversion.zig");
 pub const renderStream = rendering.renderStream;

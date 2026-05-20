@@ -13,6 +13,16 @@
             .hash = "z2d-0.8.0-j5P_HqfdFAAhoTDoRcm7Iix_8aszukCODbGuw2JxID-Z",
             .lazy = true,
         },
+        .icons = .{
+            .url = "git+https://github.com/nat3Github/zig-lib-icons.git#b7299b19fa11caa5be93ef49743d8fc31a4bf9a0",
+            .hash = "icons-0.1.0-iJxA-VrGMwAVIStBxqDPFeC3wdnANtYyDrNfYXNz95OW",
+            .lazy = true,
+        },
+        .dvui = .{
+            .url = "git+https://github.com/david-vanderson/dvui#v0.4.0",
+            .hash = "dvui-0.4.0-AQFJmQjU3wBQi8tkUTwHgtqWhhGlghgmBExQ-jqPRQBR",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

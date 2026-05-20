@@ -207,17 +207,12 @@ pub const Color = extern struct {
     }
 
     pub fn lerp(lhs: Self, rhs: Self, factor: f32) Self {
-        const l = struct {
-            fn l(a: f32, b: f32, c: f32) u8 {
-                return @intFromFloat(@as(f32, @floatFromInt(a)) + (@as(f32, @floatFromInt(b)) - @as(f32, @floatFromInt(a))) * std.math.clamp(c, 0, 1));
-            }
-        }.l;
-
+        const t = std.math.clamp(factor, 0, 1);
         return Self{
-            .r = l(lhs.r, rhs.r, factor),
-            .g = l(lhs.g, rhs.g, factor),
-            .b = l(lhs.b, rhs.b, factor),
-            .a = l(lhs.a, rhs.a, factor),
+            .r = lhs.r + (rhs.r - lhs.r) * t,
+            .g = lhs.g + (rhs.g - lhs.g) * t,
+            .b = lhs.b + (rhs.b - lhs.b) * t,
+            .a = lhs.a + (rhs.a - lhs.a) * t,
         };
     }
 

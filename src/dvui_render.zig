@@ -8,8 +8,9 @@ const std = @import("std");
 const math = std.math;
 const dvui = @import("dvui");
 
-const tvg = @import("tinyvg/tinyvg.zig");
-const parsing = @import("tinyvg/parsing.zig");
+const svg2tvg = @import("svg2tvg");
+const tvg = svg2tvg.tvg;
+const parsing = svg2tvg.tvg_parsing;
 
 const Point = dvui.Point.Physical;
 const Rect = dvui.Rect.Physical;
@@ -283,11 +284,15 @@ fn flattenSegment(
                 cur = n.data.p1;
             },
             .arc_circle => |n| {
-                try flattenArc(out, alloc, xf, cur, n.data.radius, n.data.radius, 0, n.data.large_arc, n.data.sweep, n.data.target);
+                // NOTE: svg2tvg encodes the sweep bit INVERTED relative to the
+                // SVG convention (see rendering.zig where the z2d path passes
+                // `!arc.sweep` for the same reason).  Without this flip the
+                // rounded corners of icons like `briefcase` come out concave.
+                try flattenArc(out, alloc, xf, cur, n.data.radius, n.data.radius, 0, n.data.large_arc, !n.data.sweep, n.data.target);
                 cur = n.data.target;
             },
             .arc_ellipse => |n| {
-                try flattenArc(out, alloc, xf, cur, n.data.radius_x, n.data.radius_y, n.data.rotation, n.data.large_arc, n.data.sweep, n.data.target);
+                try flattenArc(out, alloc, xf, cur, n.data.radius_x, n.data.radius_y, n.data.rotation, n.data.large_arc, !n.data.sweep, n.data.target);
                 cur = n.data.target;
             },
             .close => {
@@ -314,7 +319,7 @@ fn flattenCubic(
     p2: tvg.Point,
     p3: tvg.Point,
 ) !void {
-    const tol_sq: f32 = 0.25; // (0.5 px)²
+    const tol_sq: f32 = 0.0025; // (0.05 px)² — same sub-pixel chord budget as flattenArc, for the same reason: dvui's stroke uses miter joins.
 
     const Frame = struct { p0: Point, p1: Point, p2: Point, p3: Point, depth: u8 };
     var stack: [32]Frame = undefined;
@@ -439,15 +444,19 @@ fn flattenArc(
     if (!sweep and delta > 0) delta -= 2 * math.pi;
     if (sweep and delta < 0) delta += 2 * math.pi;
 
-    // Sample count: target chord ~0.5 px in physical space.
+    // Chord-deviation budget of 0.05 px.  dvui's stroke renders our polyline
+    // with hard miter joins between every chord — at ~0.5 px chord error the
+    // miters add up to a clearly chamfered corner (e.g. the briefcase icon's
+    // rounded corners look octagonal).  Sub-pixel sampling makes the joins
+    // invisible to the eye after AA.
     const r_max = @max(rx, ry) * xf.meanScale();
-    const err: f32 = 0.5;
+    const err: f32 = 0.05;
     const theta_step = math.acos(math.clamp(r_max / (r_max + err), -1.0, 1.0));
     var n: usize = @intFromFloat(@ceil(@abs(delta) / @max(theta_step, 1e-4)));
-    n = math.clamp(n, 4, 256);
+    n = math.clamp(n, 4, 512);
 
     var i: usize = 1;
-    while (i <= n) : (i += 1) {
+    while (i < n) : (i += 1) {
         const t = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(n));
         const theta = theta1 + delta * t;
         const ct = @cos(theta);
@@ -456,6 +465,11 @@ fn flattenArc(
         const y = sin_phi * rx * ct + cos_phi * ry * st + cy;
         try out.append(alloc, xf.applyXY(x, y));
     }
+    // ALWAYS land the final vertex on `target` exactly.  Floating-point
+    // accumulation can otherwise leave a sub-pixel gap → dvui's stroke
+    // joins the gap with a stub segment whose normal is undefined →
+    // visible miter spike pointing perpendicular to the path.
+    try out.append(alloc, xf.apply(p1));
 }
 
 fn fillPathTvg(
@@ -477,12 +491,13 @@ fn fillPathTvg(
         pts.clearRetainingCapacity();
         try flattenSegment(seg, xf, &pts, allocator);
         if (pts.items.len < 3) continue;
-        // Drop a trailing duplicate of the start (from `.close`) so the
-        // polygon is a clean ring.
-        const last = pts.items.len - 1;
-        if (last > 0 and approxEqPoint(pts.items[0], pts.items[last])) {
-            _ = pts.pop();
-        }
+        // Strip ALL trailing duplicates of the start vertex.  A closed sub-
+        // path commonly produces two copies: the last bezier/arc lands back
+        // on the start point, AND the `.close` command appends start again.
+        // Leaving even one causes a zero-length segment that pollutes ear-
+        // clipping and stroke miter joins.
+        stripTrailingDuplicatesOfFirst(&pts);
+        if (pts.items.len < 3) continue;
         try fillPolygonPhysical(allocator, pts.items, color, opts.fade);
     }
 }
@@ -502,14 +517,17 @@ fn strokePathTvg(
         pts.clearRetainingCapacity();
         try flattenSegment(seg, xf, &pts, allocator);
         if (pts.items.len < 2) continue;
-        // Detect closing: if last point equals start, mark closed and drop
-        // duplicate so dvui's stroke closes the ring itself.
-        var closed = false;
-        const last = pts.items.len - 1;
-        if (last > 0 and approxEqPoint(pts.items[0], pts.items[last])) {
-            _ = pts.pop();
-            closed = true;
-        }
+        // Strip every trailing copy of the start point — the last bezier/arc
+        // commonly lands on `start`, and `.close` then appends start again.
+        // dvui's stroke routine produces a perpendicular spike at the join
+        // whenever the closing segment has near-zero length (degenerate
+        // normal), so we MUST collapse them.
+        const closed = pts.items.len > 1 and approxEqPoint(pts.items[0], pts.items[pts.items.len - 1]);
+        if (closed) stripTrailingDuplicatesOfFirst(&pts);
+        // Also collapse zero-length runs anywhere in the polyline — these
+        // cause the same miter-spike artifact at the bad vertex.
+        collapseRunDuplicates(&pts);
+        if (pts.items.len < 2) continue;
         var pb = dvui.Path.Builder.init(alloc);
         defer pb.deinit();
         for (pts.items) |p| pb.addPoint(p);
@@ -583,32 +601,86 @@ fn pointInTriangle(p: Point, a: Point, b: Point, c: Point) bool {
     return !(has_neg and has_pos);
 }
 
+/// Strictly interior test — points exactly on the triangle's edge are NOT
+/// considered inside.  This matters in ear clipping: a reflex vertex sitting
+/// on a polygon edge is fine to share with an ear, and forbidding it would
+/// freeze the algorithm on geometry where neighbouring path nodes briefly
+/// touch the same line (very common after Bezier flattening).
+fn pointInTriangleStrict(p: Point, a: Point, b: Point, c: Point) bool {
+    const d1 = triangleArea2(a, b, p);
+    const d2 = triangleArea2(b, c, p);
+    const d3 = triangleArea2(c, a, p);
+    const eps: f32 = 1e-5;
+    return (d1 > eps and d2 > eps and d3 > eps) or
+        (d1 < -eps and d2 < -eps and d3 < -eps);
+}
+
+/// Compactly remove the `i`-th entry from a length-`*remaining` ring.
+fn removeAt(idx: []u32, remaining: *usize, i: usize) void {
+    var k: usize = i;
+    while (k + 1 < remaining.*) : (k += 1) idx[k] = idx[k + 1];
+    remaining.* -= 1;
+}
+
+/// Scale the collinearity tolerance with polygon size so absolute-pixel icons
+/// and sub-pixel ones use comparable thresholds.  Returns `2 * area_tol` in
+/// the same units as `triangleArea2`.
+fn collinearEpsilon(pts: []const Point) f32 {
+    var min_x: f32 = pts[0].x;
+    var max_x: f32 = pts[0].x;
+    var min_y: f32 = pts[0].y;
+    var max_y: f32 = pts[0].y;
+    for (pts[1..]) |p| {
+        if (p.x < min_x) min_x = p.x;
+        if (p.x > max_x) max_x = p.x;
+        if (p.y < min_y) min_y = p.y;
+        if (p.y > max_y) max_y = p.y;
+    }
+    const extent = @max(max_x - min_x, max_y - min_y);
+    // ~0.01 px chord-deviation triangle is considered collinear.
+    return @max(1e-5, extent * 1e-4);
+}
+
 /// Classic O(n²) ear clipping.  Adequate for icon polygons (≤ a few hundred
-/// verts).  Does NOT handle holes or self-intersecting polygons — TVG fills
-/// can in principle be self-intersecting, but the icon sets we ship (feather,
-/// lucide, heroicons, entypo) are simple polygons after path flattening.
+/// verts).  Does NOT handle holes or self-intersecting polygons.  Robustness
+/// notes:
+///   * Re-tests `i_prev` after each ear removal (a removal can create a new
+///     ear at the previous vertex; without the back-step we can stall on
+///     concave shapes and bail to a bad fan fallback that visibly inverts
+///     corners).
+///   * Treats near-collinear vertices as removable degenerates so the loop
+///     always makes progress and degenerate triangles don't get emitted.
+///   * Uses signed-area sign to normalise winding regardless of Y direction
+///     — `triangleArea2 > 0` then consistently identifies convex corners.
 fn earClipFill(allocator: std.mem.Allocator, pts: []const Point, color: Color) !void {
     const n = pts.len;
     if (n < 3) return;
 
-    // Build a doubly-linked vertex ring oriented CCW (positive signed area).
     var idx = try allocator.alloc(u32, n);
     defer allocator.free(idx);
 
-    const ccw = signedArea(pts) > 0;
-    for (0..n) |i| idx[i] = @intCast(if (ccw) i else n - 1 - i);
+    // Normalise to a single winding direction so `triangleArea2 > 0` always
+    // means "convex corner".  We don't care about absolute handedness — only
+    // that the ring traversal and the corner test agree.
+    const positive_area = signedArea(pts) > 0;
+    for (0..n) |i| idx[i] = @intCast(if (positive_area) i else n - 1 - i);
 
     var remaining: usize = n;
-    var verts_out = try allocator.alloc(Point, n);
-    defer allocator.free(verts_out);
-    for (0..n) |i| verts_out[i] = pts[i];
+    const verts_out = pts; // immutable; index ring shrinks instead
 
     var tris = try std.ArrayList(u32).initCapacity(allocator, (n - 2) * 3);
     defer tris.deinit(allocator);
 
-    var guard: usize = remaining * remaining + 8;
+    // Collinearity threshold scales with the polygon's bounding extent so
+    // tiny icons aren't classified as all-degenerate.
+    const collinear_eps = collinearEpsilon(pts);
+
     var i: usize = 0;
-    while (remaining > 3 and guard > 0) : (guard -= 1) {
+    var consecutive_failures: usize = 0;
+
+    while (remaining > 3) {
+        if (consecutive_failures > remaining) break; // give up gracefully
+
         const i_prev = (i + remaining - 1) % remaining;
         const i_next = (i + 1) % remaining;
         const a_i = idx[i_prev];
@@ -619,14 +691,26 @@ fn earClipFill(allocator: std.mem.Allocator, pts: []const Point, color: Color) !
         const c = verts_out[c_i];
 
         const cross = triangleArea2(a, b, c);
-        var is_ear = cross > 1e-7; // convex corner in CCW polygon
+
+        // Collinear (or near-zero area) corner: remove without emitting so we
+        // never stall on degenerate runs.  This is safe for simple polygons
+        // because the middle vertex lies on the prev→next edge.
+        if (@abs(cross) <= collinear_eps) {
+            removeAt(idx, &remaining, i);
+            if (i >= remaining) i = 0;
+            consecutive_failures = 0;
+            continue;
+        }
+
+        var is_ear = cross > 0; // convex corner under our normalised winding
 
         if (is_ear) {
-            // No other vertex inside the candidate triangle?
+            // No OTHER vertex inside the candidate triangle?  Reflex vertices
+            // of the same polygon are the only ones that can sit inside.
             var j: usize = 0;
             while (j < remaining) : (j += 1) {
                 if (j == i_prev or j == i or j == i_next) continue;
-                if (pointInTriangle(verts_out[idx[j]], a, b, c)) {
+                if (pointInTriangleStrict(verts_out[idx[j]], a, b, c)) {
                     is_ear = false;
                     break;
                 }
@@ -637,12 +721,13 @@ fn earClipFill(allocator: std.mem.Allocator, pts: []const Point, color: Color) !
             try tris.append(allocator, a_i);
             try tris.append(allocator, b_i);
             try tris.append(allocator, c_i);
-            // Remove vertex i from ring.
-            var k: usize = i;
-            while (k + 1 < remaining) : (k += 1) idx[k] = idx[k + 1];
-            remaining -= 1;
-            if (i >= remaining) i = 0;
+            removeAt(idx, &remaining, i);
+            // Step BACK so the (now) previous vertex gets re-tested — removing
+            // an ear can promote its neighbour to an ear too.
+            if (i == 0) i = remaining - 1 else i -= 1;
+            consecutive_failures = 0;
         } else {
+            consecutive_failures += 1;
             i = (i + 1) % remaining;
         }
     }
@@ -651,17 +736,10 @@ fn earClipFill(allocator: std.mem.Allocator, pts: []const Point, color: Color) !
         try tris.append(allocator, idx[0]);
         try tris.append(allocator, idx[1]);
         try tris.append(allocator, idx[2]);
-    } else if (remaining > 3) {
-        // Degenerate input — emit a fan as a fallback to avoid disappearing
-        // geometry.  Visible artifacts on truly bad polygons, but does not
-        // crash.
-        var k: usize = 1;
-        while (k + 1 < remaining) : (k += 1) {
-            try tris.append(allocator, idx[0]);
-            try tris.append(allocator, idx[k]);
-            try tris.append(allocator, idx[k + 1]);
-        }
     }
+    // If remaining > 3 here the polygon is genuinely pathological (self-
+    // intersection, etc.) — emit nothing rather than a fan that would draw
+    // overlapping triangles and look like inverted corners.
 
     // Emit batched triangle mesh.
     const win_alloc = dvui.currentWindow().lifo();
@@ -712,6 +790,30 @@ fn approxEqPoint(a: Point, b: Point) bool {
     const dx = a.x - b.x;
     const dy = a.y - b.y;
     return (dx * dx + dy * dy) < 1e-6;
+}
+
+/// Pop every trailing point that coincides with `pts[0]`.  Common after
+/// closing a sub-path: the last drawing command lands on `start` AND the
+/// explicit `.close` node appends `start` again, producing two duplicates.
+fn stripTrailingDuplicatesOfFirst(pts: *std.ArrayList(Point)) void {
+    while (pts.items.len > 1 and approxEqPoint(pts.items[0], pts.items[pts.items.len - 1])) {
+        _ = pts.pop();
+    }
+}
+
+/// Compact consecutive duplicate points.  Required because a near-zero
+/// segment fed to dvui's stroke routine yields a degenerate join normal and
+/// renders as a perpendicular spike at that vertex.
+fn collapseRunDuplicates(pts: *std.ArrayList(Point)) void {
+    if (pts.items.len < 2) return;
+    var w: usize = 1;
+    for (pts.items[1..]) |p| {
+        if (!approxEqPoint(pts.items[w - 1], p)) {
+            pts.items[w] = p;
+            w += 1;
+        }
+    }
+    pts.shrinkRetainingCapacity(w);
 }
 
 // ---------------------------------------------------------------------------
