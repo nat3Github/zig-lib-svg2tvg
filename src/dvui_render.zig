@@ -192,11 +192,15 @@ fn strokeTvgRect(r: tvg.Rectangle, color: Color, thickness: f32, xf: Transform) 
     const alloc = dvui.currentWindow().lifo();
     var pb = dvui.Path.Builder.init(alloc);
     defer pb.deinit();
-    pb.addPoint(xf.applyXY(r.x, r.y));
-    pb.addPoint(xf.applyXY(r.x + r.width, r.y));
-    pb.addPoint(xf.applyXY(r.x + r.width, r.y + r.height));
-    pb.addPoint(xf.applyXY(r.x, r.y + r.height));
+    const pts = [_]Point{
+        xf.applyXY(r.x, r.y),
+        xf.applyXY(r.x + r.width, r.y),
+        xf.applyXY(r.x + r.width, r.y + r.height),
+        xf.applyXY(r.x, r.y + r.height),
+    };
+    for (pts) |p| pb.addPoint(p);
     pb.build().stroke(.{ .thickness = thickness, .color = color, .closed = true });
+    addRoundJoins(&pts, thickness, color);
 }
 
 fn strokeLine(p0: Point, p1: Point, color: Color, thickness: f32) void {
@@ -206,6 +210,28 @@ fn strokeLine(p0: Point, p1: Point, color: Color, thickness: f32) void {
     pb.addPoint(p0);
     pb.addPoint(p1);
     pb.build().stroke(.{ .thickness = thickness, .color = color, .closed = false });
+    addRoundJoins(&.{ p0, p1 }, thickness, color);
+}
+
+/// dvui's stroke uses miter joins clipped to 2x thickness — sharp corners
+/// (octagons, triangles, the spikes between aperture blades) come out
+/// chamfered.  Drawing a filled disc of stroke-radius at every polyline
+/// vertex paints over the chamfer and gives a visually round join + cap.
+/// Cheap because the disc fans are tiny and get cached into the icon's
+/// offscreen texture on first render.
+fn addRoundJoins(pts: []const Point, thickness: f32, color: Color) void {
+    const radius = thickness * 0.5;
+    if (radius < 0.5) return; // too thin to be visible
+    const alloc = dvui.currentWindow().lifo();
+    for (pts) |p| {
+        var pb = dvui.Path.Builder.init(alloc);
+        defer pb.deinit();
+        // dvui's addArc sweeps from `start` DOWN to `end`, so pass start=2pi,
+        // end=0 for a full clockwise circle (with `start < end` the inner loop
+        // is a no-op and only one point is emitted).
+        pb.addArc(p, radius, math.pi * 2.0, 0, true);
+        pb.build().fillConvex(.{ .color = color });
+    }
 }
 
 fn fillPolygonTvg(
@@ -238,10 +264,15 @@ fn strokePolylineTvg(
     if (vertices.len < 2) return;
     const thickness = line_width * xf.meanScale();
     const alloc = dvui.currentWindow().lifo();
+    const pts = alloc.alloc(Point, vertices.len) catch return;
+    defer alloc.free(pts);
+    for (vertices, 0..) |v, i| pts[i] = xf.apply(v);
+
     var pb = dvui.Path.Builder.init(alloc);
     defer pb.deinit();
-    for (vertices) |v| pb.addPoint(xf.apply(v));
+    for (pts) |p| pb.addPoint(p);
     pb.build().stroke(.{ .thickness = thickness, .color = color, .closed = closed });
+    addRoundJoins(pts, thickness, color);
 }
 
 // ---------------------------------------------------------------------------
@@ -532,6 +563,7 @@ fn strokePathTvg(
         defer pb.deinit();
         for (pts.items) |p| pb.addPoint(p);
         pb.build().stroke(.{ .thickness = thickness, .color = color, .closed = closed });
+        addRoundJoins(pts.items, thickness, color);
     }
 }
 

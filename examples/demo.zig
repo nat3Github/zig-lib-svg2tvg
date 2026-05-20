@@ -257,6 +257,49 @@ fn renderColumn(id_extra: usize, method: Method, title: []const u8, keep_running
 
     dvui.label(@src(), "{s}", .{title}, .{ .id_extra = id_extra });
 
+    // --icon mode: render a single icon at several sizes, bypass grid layout.
+    if (lookupSingleIconBytes()) |bytes| {
+        var icon_box = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .min_size_content = .{ .w = 540, .h = 970 },
+            .id_extra = id_extra,
+        });
+        defer icon_box.deinit();
+        const icon_rs = icon_box.data().contentRectScale();
+
+        var pic_icon = blk: {
+            if (screenshot_path == null) break :blk null;
+            const want_z2d = screenshot_z2d;
+            if ((method == .z2d) != want_z2d) break :blk null;
+            break :blk dvui.Picture.start(icon_rs.r);
+        };
+
+        const sizes = [_]f32{ 64 * icon_rs.s, 128 * icon_rs.s, 256 * icon_rs.s, 512 * icon_rs.s };
+        var y_off: f32 = icon_rs.r.y + 4;
+        for (sizes) |s| {
+            const r = dvui.Rect.Physical{ .x = icon_rs.r.x + 4, .y = y_off, .w = s, .h = s };
+            switch (method) {
+                .dvui_render => try drawCachedDvui(bytes, r),
+                .z2d => try drawCachedZ2d(bytes, r),
+            }
+            y_off += s + 8;
+        }
+
+        if (pic_icon) |*p| {
+            p.stop();
+            if (screenshot_path) |path| {
+                if (screenshot_frame_index >= 2) {
+                    writePicturePng(p, path) catch |err| {
+                        std.log.err("screenshot write failed: {s}", .{@errorName(err)});
+                    };
+                    keep_running.* = false;
+                }
+                screenshot_frame_index += 1;
+            }
+            p.deinit();
+        }
+        return;
+    }
+
     const total_rows = (ICON_LIST.len + GRID_COLS - 1) / GRID_COLS;
     const grid_h: f32 = @as(f32, @floatFromInt(total_rows)) * CELL_SIZE;
     const grid_w: f32 = @as(f32, @floatFromInt(GRID_COLS)) * CELL_SIZE;
@@ -442,6 +485,16 @@ fn colorAsF32(c: dvui.Color) svg2tvg.Color {
 }
 
 // --- helpers ----------------------------------------------------------------
+
+fn lookupSingleIconBytes() ?[]const u8 {
+    const name = single_icon orelse return null;
+    inline for (@typeInfo(icons.tvg.feather).@"struct".decls) |d| {
+        if (std.mem.eql(u8, d.name, name)) {
+            return @field(icons.tvg.feather, d.name);
+        }
+    }
+    return null;
+}
 
 fn writePicturePng(pic: *dvui.Picture, path: []const u8) !void {
     var file = try std.fs.cwd().createFile(path, .{});
