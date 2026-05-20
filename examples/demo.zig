@@ -318,6 +318,12 @@ fn drawCachedDvui(bytes: []const u8, cell: dvui.Rect.Physical) !void {
     const h_u: u32 = @intCast(h_i);
     const key = keyHash(.{ .ptr = @intFromPtr(bytes.ptr), .w = w_u, .h = h_u });
 
+    // Skip cells outside the visible viewport.  Without this we'd try to
+    // populate the cache for ~286×2 icons on the first frame, which exceeds
+    // the backend's per-frame texture-creation budget and we end up with
+    // half the grid blank.  As the user scrolls, off-screen cells fill in.
+    if (dvui.clipGet().intersect(cell).empty()) return;
+
     const cw = dvui.currentWindow();
 
     if (dvui_cache.?.get(key)) |tex| {
@@ -330,17 +336,29 @@ fn drawCachedDvui(bytes: []const u8, cell: dvui.Rect.Physical) !void {
 
     // MISS: render into an offscreen target so we get a single texture we can
     // blit cheaply on subsequent frames.
+    //
+    // Two non-obvious requirements:
+    //   1. The current clip rect is whatever the parent widget left us with
+    //      (usually the visible scroll viewport).  Off-screen cells would
+    //      have an empty clip and produce a blank texture.  Temporarily widen
+    //      the clip to cover the whole texture target so every cell renders.
+    //   2. Use a target `offset` so draws at the cell's screen position
+    //      translate into the texture's local (0..w, 0..h) coords — that way
+    //      the cached texture stores the icon at the origin and can later be
+    //      blitted with `renderTexture` anywhere.
     const t0 = std.time.nanoTimestamp();
     const target = dvui.textureCreateTarget(w_u, h_u, .linear, .rgba_32) catch return;
-    const prev = dvui.renderTarget(.{ .texture = target, .offset = .{ .x = 0, .y = 0 } });
+    const prev_target = dvui.renderTarget(.{ .texture = target, .offset = cell.topLeft() });
+    const prev_clip = dvui.clipGet();
+    dvui.clipSet(.{ .x = cell.x, .y = cell.y, .w = cell.w, .h = cell.h });
 
-    const tex_rect = dvui.Rect.Physical{ .x = 0, .y = 0, .w = @floatFromInt(w_u), .h = @floatFromInt(h_u) };
-    svg2tvg_dvui.renderTvg(cw.lifo(), bytes, tex_rect, .{
+    svg2tvg_dvui.renderTvg(cw.lifo(), bytes, cell, .{
         .color_override = ICON_COLOR,
         .keep_aspect = true,
     }) catch {};
 
-    _ = dvui.renderTarget(prev);
+    dvui.clipSet(prev_clip);
+    _ = dvui.renderTarget(prev_target);
 
     const tex = dvui.textureFromTarget(target) catch return;
     dvui_cache.?.put(key, tex) catch {};
@@ -376,6 +394,9 @@ fn drawCachedZ2d(bytes: []const u8, cell: dvui.Rect.Physical) !void {
     const w_u: u32 = @intCast(w_i);
     const h_u: u32 = @intCast(h_i);
     const key = keyHash(.{ .ptr = @intFromPtr(bytes.ptr), .w = w_u, .h = h_u });
+
+    // Skip cells outside the visible viewport (see drawCachedDvui).
+    if (dvui.clipGet().intersect(cell).empty()) return;
 
     if (z2d_cache.?.get(key)) |tex| {
         const t0 = std.time.nanoTimestamp();
