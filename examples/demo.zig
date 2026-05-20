@@ -195,7 +195,6 @@ pub fn main() !void {
 
 fn gui_frame() !bool {
     var keep_running = true;
-    hovered_name = null; // recomputed during this frame's cell loop
 
     var outer = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both });
     defer outer.deinit();
@@ -235,6 +234,12 @@ fn gui_frame() !bool {
             keep_running = false;
         }
     }
+
+    // Reset BEFORE the cell loop runs (and AFTER the top bar has already
+    // displayed last frame's value).  Cells set `hovered_name` if the mouse
+    // is inside.  The top bar shows the value one frame later, which is
+    // imperceptible at 60Hz.
+    hovered_name = null;
 
     // --- shared scroll area containing both columns side by side ----------
     var scroll = dvui.scrollArea(@src(), .{
