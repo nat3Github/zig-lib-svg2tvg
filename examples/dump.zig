@@ -21,6 +21,12 @@ pub fn main() !void {
                     break :blk @field(icons.tvg.lucide, d.name);
                 }
             }
+        } else if (std.mem.eql(u8, set_name, "entypo")) {
+            inline for (@typeInfo(icons.tvg.entypo).@"struct".decls) |d| {
+                if (std.mem.eql(u8, d.name, icon_name)) {
+                    break :blk @field(icons.tvg.entypo, d.name);
+                }
+            }
         } else {
             inline for (@typeInfo(icons.tvg.feather).@"struct".decls) |d| {
                 if (std.mem.eql(u8, d.name, icon_name)) {

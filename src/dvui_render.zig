@@ -831,17 +831,202 @@ fn fillPathTvg(
     xf: Transform,
     opts: RenderOptions,
 ) !void {
-    const color = resolveStyleSource(style, color_table, opts, xf);
-    var pts = std.ArrayList(Point){};
-    defer pts.deinit(allocator);
-    for (path.segments) |seg| {
-        pts.clearRetainingCapacity();
-        try flattenSegment(seg, xf, &pts, allocator, 0);
-        if (pts.items.len < 3) continue;
-        stripTrailingDuplicatesOfFirst(&pts);
-        if (pts.items.len < 3) continue;
-        try fillPolygonPhysical(allocator, mesh, pts.items, color, opts.fade);
+    const source = resolveStyleSource(style, color_table, opts, xf);
+
+    // Flatten every segment into its own polyline (already cleaned of
+    // trailing duplicates).  We need them all in hand before we can
+    // classify outers vs. holes by winding direction.
+    var subpaths = std.ArrayList(std.ArrayList(Point)){};
+    defer {
+        for (subpaths.items) |*sp| sp.deinit(allocator);
+        subpaths.deinit(allocator);
     }
+
+    for (path.segments) |seg| {
+        var pts = std.ArrayList(Point){};
+        errdefer pts.deinit(allocator);
+        try flattenSegment(seg, xf, &pts, allocator, 0);
+        if (pts.items.len < 3) {
+            pts.deinit(allocator);
+            continue;
+        }
+        stripTrailingDuplicatesOfFirst(&pts);
+        if (pts.items.len < 3) {
+            pts.deinit(allocator);
+            continue;
+        }
+        try subpaths.append(allocator, pts);
+    }
+
+    if (subpaths.items.len == 0) return;
+    if (subpaths.items.len == 1) {
+        try fillPolygonPhysical(allocator, mesh, subpaths.items[0].items, source, opts.fade);
+        return;
+    }
+
+    // Compound path.  Group each outer subpath with any holes contained
+    // inside it and triangulate the result as a polygon-with-holes.
+    try fillCompoundPath(allocator, mesh, subpaths.items, source, opts.fade);
+}
+
+/// Triangulate a compound path (multiple subpaths) as polygon-with-holes
+/// using bridge edges + ear-clip.  Classification: outers are the subpaths
+/// with the same winding direction as the largest-area subpath; everything
+/// else is a hole.  For each outer we find holes whose vertices fall
+/// inside it and splice them in via bridges, then ear-clip the result.
+fn fillCompoundPath(
+    allocator: std.mem.Allocator,
+    mesh: *MeshBuilder,
+    subpaths: []const std.ArrayList(Point),
+    source: ColorSource,
+    fade: f32,
+) !void {
+    // Per-subpath signed area + tag.
+    var areas = try allocator.alloc(f32, subpaths.len);
+    defer allocator.free(areas);
+    for (subpaths, 0..) |sp, i| areas[i] = signedArea(sp.items);
+
+    // Outer winding = sign of the largest |area| subpath.
+    var largest: usize = 0;
+    for (areas, 0..) |a, i| if (@abs(a) > @abs(areas[largest])) {
+        largest = i;
+    };
+    const outer_positive = areas[largest] > 0;
+
+    var used = try allocator.alloc(bool, subpaths.len);
+    defer allocator.free(used);
+    @memset(used, false);
+
+    // Pass 1: each same-winding "outer" claims contained opposite-winding
+    // subpaths as holes and is rendered as polygon-with-holes.
+    for (subpaths, 0..) |outer, oi| {
+        if (used[oi]) continue;
+        const is_outer = (areas[oi] > 0) == outer_positive;
+        if (!is_outer) continue;
+        used[oi] = true;
+
+        var holes = std.ArrayList([]const Point){};
+        defer holes.deinit(allocator);
+        for (subpaths, 0..) |hole, hi| {
+            if (used[hi]) continue;
+            const is_hole = (areas[hi] > 0) != outer_positive;
+            if (!is_hole) continue;
+            if (pointInPolygonEvenOdd(hole.items[0], outer.items)) {
+                try holes.append(allocator, hole.items);
+                used[hi] = true;
+            }
+        }
+
+        if (holes.items.len == 0) {
+            try fillPolygonPhysical(allocator, mesh, outer.items, source, fade);
+            continue;
+        }
+
+        var merged = std.ArrayList(Point){};
+        defer merged.deinit(allocator);
+        try merged.appendSlice(allocator, outer.items);
+
+        for (holes.items) |hole| {
+            try spliceHoleIntoOuter(allocator, &merged, hole);
+        }
+
+        if (merged.items.len >= 3) {
+            try earClipFill(allocator, mesh, merged.items, source);
+        }
+    }
+
+    // Pass 2: anything left over is an opposite-winding subpath that was
+    // NOT inside any outer — render it as a standalone filled polygon.
+    // (Example: entypo `address` has two opposite-winding shapes whose
+    // bounding boxes don't overlap — both should be solid fills, neither
+    // is a hole.)
+    for (subpaths, 0..) |sp, i| {
+        if (used[i]) continue;
+        try fillPolygonPhysical(allocator, mesh, sp.items, source, fade);
+    }
+}
+
+/// Even-odd point-in-polygon (Crossing Number test).  `poly` is a flat
+/// polygon (no holes).
+fn pointInPolygonEvenOdd(p: Point, poly: []const Point) bool {
+    if (poly.len < 3) return false;
+    var inside = false;
+    var j: usize = poly.len - 1;
+    for (poly, 0..) |a, i| {
+        const b = poly[j];
+        if (((a.y > p.y) != (b.y > p.y)) and
+            (p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x))
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    return inside;
+}
+
+/// Bridge a hole into an outer polygon, in-place on `outer`.  Algorithm:
+///   1. Find the hole's rightmost vertex H.
+///   2. Find the outer vertex V with the smallest |dy| among those whose x > H.x
+///      (a cheap stand-in for the standard "horizontal ray right" intersection
+///      that picks the nearest outer edge — good enough for icon-shaped
+///      polygons where holes are well inside the outer).
+///   3. Splice: outer becomes `[outer[0..V+1], hole[H..end], hole[0..H+1], V, outer[V+1..]]`,
+///      duplicating V and H so the ear-clipper sees a single ring that
+///      visits the bridge twice.
+fn spliceHoleIntoOuter(
+    allocator: std.mem.Allocator,
+    outer: *std.ArrayList(Point),
+    hole: []const Point,
+) !void {
+    if (hole.len < 3 or outer.items.len < 3) return;
+
+    // 1. Rightmost vertex of hole.
+    var h_max: usize = 0;
+    for (hole, 0..) |p, i| {
+        if (p.x > hole[h_max].x) h_max = i;
+    }
+    const anchor = hole[h_max];
+
+    // 2. Closest outer vertex to the right of the anchor.
+    var bridge_idx: ?usize = null;
+    var best_score: f32 = math.floatMax(f32);
+    for (outer.items, 0..) |p, i| {
+        if (p.x <= anchor.x) continue;
+        const dx = p.x - anchor.x;
+        const dy = @abs(p.y - anchor.y);
+        // Bias toward small dy (more likely to be the natural visible
+        // vertex from horizontal-ray-right).
+        const score = dx + dy * 2.0;
+        if (score < best_score) {
+            best_score = score;
+            bridge_idx = i;
+        }
+    }
+    if (bridge_idx == null) return; // no visible bridge target
+    const bi = bridge_idx.?;
+    const bridge_v = outer.items[bi];
+
+    // 3. Splice.  Walk hole starting at h_max, full loop, end with hole[h_max]
+    //    again (closes the hole loop), then bridge_v duplicate to return to
+    //    the outer.  Hole walk is in the hole's own winding (opposite to
+    //    outer's, which is exactly the geometry an "inside-out" cut needs).
+    var spliced = std.ArrayList(Point){};
+    defer spliced.deinit(allocator);
+    try spliced.ensureUnusedCapacity(allocator, outer.items.len + hole.len + 2);
+    try spliced.appendSlice(allocator, outer.items[0 .. bi + 1]);
+    var hk: usize = h_max;
+    var visited: usize = 0;
+    while (visited < hole.len) : (visited += 1) {
+        try spliced.append(allocator, hole[hk]);
+        hk = (hk + 1) % hole.len;
+    }
+    try spliced.append(allocator, anchor); // close hole loop
+    try spliced.append(allocator, bridge_v); // close bridge back to outer
+    try spliced.appendSlice(allocator, outer.items[bi + 1 ..]);
+
+    // Replace outer with spliced.
+    outer.clearRetainingCapacity();
+    try outer.appendSlice(allocator, spliced.items);
 }
 
 fn strokePathTvg(
@@ -1066,10 +1251,17 @@ fn earClipFill(allocator: std.mem.Allocator, mesh: *MeshBuilder, pts: []const Po
         try tris.append(allocator, idx[0]);
         try tris.append(allocator, idx[1]);
         try tris.append(allocator, idx[2]);
+    } else if (remaining > 3) {
+        // Fan-fallback for genuinely pathological polygons.  For opaque
+        // solid fills the overlap is invisible; alternative is a missing
+        // chunk of the icon.
+        var k: usize = 1;
+        while (k + 1 < remaining) : (k += 1) {
+            try tris.append(allocator, idx[0]);
+            try tris.append(allocator, idx[k]);
+            try tris.append(allocator, idx[k + 1]);
+        }
     }
-    // If remaining > 3 here the polygon is genuinely pathological (self-
-    // intersection, etc.) — emit nothing rather than a fan that would draw
-    // overlapping triangles and look like inverted corners.
 
     // Append straight into the master mesh.  Per-vertex colour sampled
     // from `source` — gradients shade across the ear-clipped triangulation
