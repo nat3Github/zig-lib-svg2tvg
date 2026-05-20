@@ -1,6 +1,7 @@
 .{
     .name = .svg2tvg,
     .fingerprint = 0x15ec8a64b919931e,
+    .minimum_zig_version = "0.15.2",
     .version = "0.0.0",
     .dependencies = .{
         .xml = .{
@@ -10,6 +11,7 @@
         .z2d = .{
             .url = "git+https://github.com/vancluever/z2d#052c328e8b37d8daf162e374f847c435bec87c6d",
             .hash = "z2d-0.8.0-j5P_HqfdFAAhoTDoRcm7Iix_8aszukCODbGuw2JxID-Z",
+            .lazy = true,
         },
     },
     .paths = .{
