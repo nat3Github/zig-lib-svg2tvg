@@ -328,7 +328,7 @@ fn strokeLine(alloc: std.mem.Allocator, mesh: *MeshBuilder, p0: Point, p1: Point
 /// linecap=round`.  Doubles the triangle count vs a single combined
 /// stroke, but output is cached per icon so the cost is one-shot.
 fn strokePolylineRoundJoined(
-    alloc: std.mem.Allocator,
+    _: std.mem.Allocator,
     mesh: *MeshBuilder,
     pts: []const Point,
     closed: bool,
@@ -337,41 +337,124 @@ fn strokePolylineRoundJoined(
 ) !void {
     if (pts.len < 2) return;
     const radius = thickness * 0.5;
+    if (radius <= 0) return;
     const n = pts.len;
+    const pma = Color.PMA.fromColor(color);
 
-    // 1. Per-edge butt-capped strokes.
-    var i: usize = 0;
+    // Estimate to grow once instead of N times.  Each edge: 4 verts + 6 idx.
+    // Each disc: (1 + DISC_RIM) verts + DISC_RIM*3 idx.
     const edge_count: usize = if (closed) n else n - 1;
-    while (i < edge_count) : (i += 1) {
-        const a = pts[i];
-        const b = pts[(i + 1) % n];
-        if (approxEqPoint(a, b)) continue;
-        var pb = dvui.Path.Builder.init(alloc);
-        defer pb.deinit();
-        pb.addPoint(a);
-        pb.addPoint(b);
-        var tri = pb.build().strokeTriangles(alloc, .{
-            .thickness = thickness,
-            .color = color,
-            .closed = false,
-            .endcap_style = .none, // butt — disc at vertex provides the round shape
-        }) catch continue;
-        defer tri.deinit(alloc);
-        try mesh.appendMesh(tri);
+    const v_edges = edge_count * 4;
+    const i_edges = edge_count * 6;
+    const disc_rim = comptime discSegmentsForRadius(0); // worst case lookup
+    _ = disc_rim;
+    try mesh.vtx.ensureUnusedCapacity(mesh.alloc, v_edges + n * 33);
+    try mesh.idx.ensureUnusedCapacity(mesh.alloc, i_edges + n * 32 * 3);
+
+    // 1. Per-edge butt-capped quads.  No miter, no AA fade — vertex discs
+    //    handle the joins.
+    var ei: usize = 0;
+    while (ei < edge_count) : (ei += 1) {
+        const a = pts[ei];
+        const b = pts[(ei + 1) % n];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const len_sq = dx * dx + dy * dy;
+        if (len_sq < 1e-12) continue;
+        const inv_len = 1.0 / @sqrt(len_sq);
+        // Perpendicular = (-dy, dx) normalised, scaled by radius.
+        const nx = -dy * inv_len * radius;
+        const ny = dx * inv_len * radius;
+        emitEdgeQuad(mesh, a, b, nx, ny, pma);
     }
 
-    // 2. Round cap / join discs at every vertex.
-    if (radius < 0.5) return;
+    // 2. Round cap/join discs at every vertex.  Each is a fan with N rim
+    //    segments chosen from a tiny step table — N=8 below ~3px radius,
+    //    rising to 32 for very thick strokes.
+    const rim = discSegmentsForRadius(radius);
     for (pts) |p| {
-        var pb = dvui.Path.Builder.init(alloc);
-        defer pb.deinit();
-        // dvui's addArc sweeps `start` DOWN to `end`; pass 2pi→0 for a full
-        // circle.  `skip_end=true` because start and end are coincident.
-        pb.addArc(p, radius, math.pi * 2.0, 0, true);
-        var tri = pb.build().fillConvexTriangles(alloc, .{ .color = color }) catch continue;
-        defer tri.deinit(alloc);
-        try mesh.appendMesh(tri);
+        emitDiscFan(mesh, p, radius, rim, pma);
     }
+}
+
+/// Emit a butt-cap stroke quad directly into the mesh.
+fn emitEdgeQuad(
+    mesh: *MeshBuilder,
+    a: Point,
+    b: Point,
+    nx: f32,
+    ny: f32,
+    pma: Color.PMA,
+) void {
+    const base: dvui.Vertex.Index = @intCast(mesh.vtx.items.len);
+    const v0: dvui.Vertex = .{ .pos = .{ .x = a.x - nx, .y = a.y - ny }, .col = pma };
+    const v1: dvui.Vertex = .{ .pos = .{ .x = a.x + nx, .y = a.y + ny }, .col = pma };
+    const v2: dvui.Vertex = .{ .pos = .{ .x = b.x + nx, .y = b.y + ny }, .col = pma };
+    const v3: dvui.Vertex = .{ .pos = .{ .x = b.x - nx, .y = b.y - ny }, .col = pma };
+    mesh.vtx.appendAssumeCapacity(v0);
+    mesh.vtx.appendAssumeCapacity(v1);
+    mesh.vtx.appendAssumeCapacity(v2);
+    mesh.vtx.appendAssumeCapacity(v3);
+    mesh.idx.appendAssumeCapacity(base + 0);
+    mesh.idx.appendAssumeCapacity(base + 1);
+    mesh.idx.appendAssumeCapacity(base + 2);
+    mesh.idx.appendAssumeCapacity(base + 0);
+    mesh.idx.appendAssumeCapacity(base + 2);
+    mesh.idx.appendAssumeCapacity(base + 3);
+    updateBounds(mesh, v0.pos);
+    updateBounds(mesh, v1.pos);
+    updateBounds(mesh, v2.pos);
+    updateBounds(mesh, v3.pos);
+}
+
+/// Emit a filled disc as a triangle fan directly into the mesh.
+fn emitDiscFan(
+    mesh: *MeshBuilder,
+    center: Point,
+    radius: f32,
+    rim_count: u32,
+    pma: Color.PMA,
+) void {
+    if (rim_count < 3) return;
+    const base: dvui.Vertex.Index = @intCast(mesh.vtx.items.len);
+    const center_v: dvui.Vertex = .{ .pos = center, .col = pma };
+    mesh.vtx.appendAssumeCapacity(center_v);
+    updateBounds(mesh, center);
+    const step = math.pi * 2.0 / @as(f32, @floatFromInt(rim_count));
+    var k: u32 = 0;
+    while (k < rim_count) : (k += 1) {
+        const theta = @as(f32, @floatFromInt(k)) * step;
+        const pos: Point = .{
+            .x = center.x + radius * @cos(theta),
+            .y = center.y + radius * @sin(theta),
+        };
+        mesh.vtx.appendAssumeCapacity(.{ .pos = pos, .col = pma });
+        updateBounds(mesh, pos);
+        // Triangle: center, rim[k], rim[k+1 mod rim_count]
+        const rim_a: dvui.Vertex.Index = @intCast(@as(u32, base) + 1 + k);
+        const rim_b: dvui.Vertex.Index = @intCast(@as(u32, base) + 1 + ((k + 1) % rim_count));
+        mesh.idx.appendAssumeCapacity(base);
+        mesh.idx.appendAssumeCapacity(rim_a);
+        mesh.idx.appendAssumeCapacity(rim_b);
+    }
+}
+
+inline fn updateBounds(mesh: *MeshBuilder, p: Point) void {
+    if (p.x < mesh.bounds_min_x) mesh.bounds_min_x = p.x;
+    if (p.y < mesh.bounds_min_y) mesh.bounds_min_y = p.y;
+    if (p.x > mesh.bounds_max_x) mesh.bounds_max_x = p.x;
+    if (p.y > mesh.bounds_max_y) mesh.bounds_max_y = p.y;
+}
+
+/// Pick a rim-segment count for a vertex disc.  Chord-error budget of
+/// ~0.5 px at the disc's edge — visually indistinguishable from a smooth
+/// arc after AA.  Stays bounded so very thick strokes don't blow up.
+fn discSegmentsForRadius(radius: f32) u32 {
+    if (radius <= 1.5) return 8;
+    if (radius <= 4.0) return 12;
+    if (radius <= 8.0) return 16;
+    if (radius <= 16.0) return 24;
+    return 32;
 }
 
 fn fillPolygonTvg(
@@ -493,7 +576,11 @@ fn flattenCubic(
     p2: tvg.Point,
     p3: tvg.Point,
 ) !void {
-    const tol_sq: f32 = 0.0025; // (0.05 px)² — same sub-pixel chord budget as flattenArc, for the same reason: dvui's stroke uses miter joins.
+    // (0.5 px)² chord error.  Previously 0.05² to hide dvui-stroke miter
+    // joins behind sub-pixel chords; now that strokes are emitted as butt-
+    // cap quads with vertex discs the band itself hides chord error and
+    // we get away with ~10× fewer subdivisions.
+    const tol_sq: f32 = 0.25;
 
     const Frame = struct { p0: Point, p1: Point, p2: Point, p3: Point, depth: u8 };
     var stack: [32]Frame = undefined;
@@ -621,13 +708,14 @@ fn flattenArc(
     if (!sweep and delta > 0) delta -= 2 * math.pi;
     if (sweep and delta < 0) delta += 2 * math.pi;
 
-    // Chord-deviation budget of 0.05 px.  dvui's stroke renders our polyline
-    // with hard miter joins between every chord — at ~0.5 px chord error the
-    // miters add up to a clearly chamfered corner (e.g. the briefcase icon's
-    // rounded corners look octagonal).  Sub-pixel sampling makes the joins
-    // invisible to the eye after AA.
+    // Chord-deviation budget of 0.5 px.  Strokes are emitted as butt-cap
+    // quads + vertex discs (no miter joins to expose chord error), and
+    // fills use this polyline for ear-clipping where sub-pixel accuracy
+    // contributes nothing visible.  ~10× fewer chord segments than the
+    // old 0.05 budget; on arc-heavy icons that means thousands of fewer
+    // vertices per cached mesh.
     const r_max = @max(rx, ry) * xf.meanScale();
-    const err: f32 = 0.05;
+    const err: f32 = 0.5;
     const theta_step = math.acos(math.clamp(r_max / (r_max + err), -1.0, 1.0));
     var n: usize = @intFromFloat(@ceil(@abs(delta) / @max(theta_step, 1e-4)));
     n = math.clamp(n, 4, 512);

@@ -80,13 +80,24 @@ fn keyHash(k: CacheKey) u64 {
 // Each frame we dupe vertex data into the dvui arena, translate to the
 // current cell position, and submit via `dvui.renderTriangles`.  No
 // texture in sight.
-const DvuiCacheMap = std.AutoHashMap(u64, svg2tvg_dvui.MeshBuilder);
+const DvuiCacheEntry = struct {
+    mesh: svg2tvg_dvui.MeshBuilder,
+    last_seen_frame: u64,
+};
+const DvuiCacheMap = std.AutoHashMap(u64, DvuiCacheEntry);
 
 // z2d cache stores a GPU texture (one PMA quad per icon).
-const Z2dCacheMap = std.AutoHashMap(u64, dvui.Texture);
+const Z2dCacheEntry = struct {
+    tex: dvui.Texture,
+    last_seen_frame: u64,
+};
+const Z2dCacheMap = std.AutoHashMap(u64, Z2dCacheEntry);
 
 var dvui_cache: ?DvuiCacheMap = null;
 var z2d_cache: ?Z2dCacheMap = null;
+
+// Frame counter — used to evict cache entries that weren't touched this frame.
+var frame_index: u64 = 0;
 
 const Bench = struct {
     initial_total_ns: u64 = 0,
@@ -116,16 +127,47 @@ var hovered_name: ?[]const u8 = null;
 fn clearCaches() void {
     {
         var it = dvui_cache.?.iterator();
-        while (it.next()) |entry| entry.value_ptr.deinit();
+        while (it.next()) |entry| entry.value_ptr.mesh.deinit();
         dvui_cache.?.clearRetainingCapacity();
     }
     {
         var it = z2d_cache.?.iterator();
-        while (it.next()) |entry| entry.value_ptr.destroyLater();
+        while (it.next()) |entry| entry.value_ptr.tex.destroyLater();
         z2d_cache.?.clearRetainingCapacity();
     }
     bench_dvui.reset();
     bench_z2d.reset();
+}
+
+/// Drop cache entries that weren't touched this frame.  Resizing the
+/// window or scrolling changes the cache key (size-dependent) so we'd
+/// otherwise accumulate stale entries forever.  Run AFTER all cells of
+/// the current frame have had a chance to bump their `last_seen_frame`.
+fn evictStaleCacheEntries() void {
+    {
+        var to_remove = std.ArrayList(u64){};
+        defer to_remove.deinit(gpa);
+        var it = dvui_cache.?.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.last_seen_frame != frame_index) {
+                entry.value_ptr.mesh.deinit();
+                to_remove.append(gpa, entry.key_ptr.*) catch {};
+            }
+        }
+        for (to_remove.items) |k| _ = dvui_cache.?.remove(k);
+    }
+    {
+        var to_remove = std.ArrayList(u64){};
+        defer to_remove.deinit(gpa);
+        var it = z2d_cache.?.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.last_seen_frame != frame_index) {
+                entry.value_ptr.tex.destroyLater();
+                to_remove.append(gpa, entry.key_ptr.*) catch {};
+            }
+        }
+        for (to_remove.items) |k| _ = z2d_cache.?.remove(k);
+    }
 }
 
 // --- main -------------------------------------------------------------------
@@ -165,8 +207,17 @@ pub fn main() !void {
 
     dvui_cache = DvuiCacheMap.init(gpa);
     z2d_cache = Z2dCacheMap.init(gpa);
+    // NOTE: don't `defer clearCaches()` here — that would run AFTER
+    // `win.deinit()` (LIFO), and Texture.destroyLater needs a live
+    // currentWindow.  Cleanup happens further down inside the window's
+    // scope.
     defer {
-        clearCaches();
+        // Maps themselves are safe to drop at any point.  Per-entry
+        // texture handles are freed inside the window scope below.
+        {
+            var it = dvui_cache.?.iterator();
+            while (it.next()) |entry| entry.value_ptr.mesh.deinit();
+        }
         dvui_cache.?.deinit();
         z2d_cache.?.deinit();
     }
@@ -189,9 +240,18 @@ pub fn main() !void {
     });
     g_win = &win;
     defer win.deinit();
+    // Now that the window is up, register a defer that destroys the cached
+    // z2d textures BEFORE `win.deinit()` runs.  LIFO of defers within main
+    // means this runs first.
+    defer {
+        var it = z2d_cache.?.iterator();
+        while (it.next()) |entry| entry.value_ptr.tex.destroyLater();
+        z2d_cache.?.clearRetainingCapacity();
+    }
 
     var interrupted = false;
     main_loop: while (true) {
+        frame_index +%= 1;
         const nstime = win.beginWait(interrupted);
         try win.begin(nstime);
         try backend.addAllEvents(&win);
@@ -201,6 +261,10 @@ pub fn main() !void {
 
         const keep_running = try gui_frame();
         if (!keep_running) break :main_loop;
+
+        // Drop cache entries no cell touched this frame (resize/scroll
+        // produces obsolete-size keys).
+        evictStaleCacheEntries();
 
         dvui.refresh(&win, @src(), null);
 
@@ -420,8 +484,9 @@ fn drawCachedDvui(bytes: []const u8, cell: dvui.Rect.Physical) !void {
     if (dvui.clipGet().intersect(cell).empty()) return;
 
     if (dvui_cache.?.getPtr(key)) |cached| {
+        cached.last_seen_frame = frame_index;
         const t0 = std.time.nanoTimestamp();
-        try submitMeshTranslated(cached, cell);
+        try submitMeshTranslated(&cached.mesh, cell);
         bench_dvui.cached_total_ns += @intCast(std.time.nanoTimestamp() - t0);
         bench_dvui.cached_count += 1;
         return;
@@ -432,10 +497,6 @@ fn drawCachedDvui(bytes: []const u8, cell: dvui.Rect.Physical) !void {
     var mesh = svg2tvg_dvui.MeshBuilder.init(gpa);
     errdefer mesh.deinit();
 
-    // Scratch arena for the transient triangle buffers dvui's
-    // `*Triangles` Path helpers leak (they over-allocate the Builder
-    // capacity, the partial-slice Triangles.deinit then mismatches GPA's
-    // size accounting).  Arena cleans them up wholesale.
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
 
@@ -450,10 +511,9 @@ fn drawCachedDvui(bytes: []const u8, cell: dvui.Rect.Physical) !void {
         .keep_aspect = true,
     }) catch {};
 
-    try dvui_cache.?.put(key, mesh);
-    // After put, the cache OWNS mesh.  Re-fetch the stored value to submit.
+    try dvui_cache.?.put(key, .{ .mesh = mesh, .last_seen_frame = frame_index });
     if (dvui_cache.?.getPtr(key)) |cached| {
-        try submitMeshTranslated(cached, cell);
+        try submitMeshTranslated(&cached.mesh, cell);
     }
 
     bench_dvui.initial_total_ns += @intCast(std.time.nanoTimestamp() - t0);
@@ -511,9 +571,10 @@ fn drawCachedZ2d(bytes: []const u8, cell: dvui.Rect.Physical) !void {
     // Skip cells outside the visible viewport (see drawCachedDvui).
     if (dvui.clipGet().intersect(cell).empty()) return;
 
-    if (z2d_cache.?.get(key)) |tex| {
+    if (z2d_cache.?.getPtr(key)) |cached| {
+        cached.last_seen_frame = frame_index;
         const t0 = std.time.nanoTimestamp();
-        dvui.renderTexture(tex, .{ .r = cell, .s = 1.0 }, .{}) catch {};
+        dvui.renderTexture(cached.tex, .{ .r = cell, .s = 1.0 }, .{}) catch {};
         bench_z2d.cached_total_ns += @intCast(std.time.nanoTimestamp() - t0);
         bench_z2d.cached_count += 1;
         return;
@@ -538,7 +599,7 @@ fn drawCachedZ2d(bytes: []const u8, cell: dvui.Rect.Physical) !void {
     // sliceFromRGBA premultiplies in place and reinterprets the bytes as PMA.
     const pma = dvui.Color.PMA.sliceFromRGBA(buf);
     const tex = dvui.Texture.create(pma, w_u, h_u, .linear, .rgba_32) catch return;
-    z2d_cache.?.put(key, tex) catch {};
+    z2d_cache.?.put(key, .{ .tex = tex, .last_seen_frame = frame_index }) catch {};
     dvui.renderTexture(tex, .{ .r = cell, .s = 1.0 }, .{}) catch {};
 
     bench_z2d.initial_total_ns += @intCast(std.time.nanoTimestamp() - t0);
