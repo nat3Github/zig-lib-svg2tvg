@@ -900,28 +900,45 @@ fn fillCompoundPath(
     };
     const outer_positive = areas[largest] > 0;
 
-    var used = try allocator.alloc(bool, subpaths.len);
-    defer allocator.free(used);
-    @memset(used, false);
+    // For each hole (opposite-winding subpath), find its DEEPEST container
+    // — the smallest-area outer that contains it.  Without this nested
+    // icons like entypo `compass` (outer ring → inner ring as hole → needle
+    // as inner outer → needle's internal hole) misroute the needle's hole
+    // into the outer ring, carving the wrong region.
+    var hole_parent = try allocator.alloc(?usize, subpaths.len);
+    defer allocator.free(hole_parent);
+    @memset(hole_parent, null);
 
-    // Pass 1: each same-winding "outer" claims contained opposite-winding
-    // subpaths as holes and is rendered as polygon-with-holes.
+    for (subpaths, 0..) |hole, hi| {
+        const is_hole = (areas[hi] > 0) != outer_positive;
+        if (!is_hole) continue;
+        const anchor = hole.items[0];
+        var best_parent: ?usize = null;
+        var best_area: f32 = math.floatMax(f32);
+        for (subpaths, 0..) |outer, oi| {
+            if (oi == hi) continue;
+            const is_outer = (areas[oi] > 0) == outer_positive;
+            if (!is_outer) continue;
+            if (!pointInPolygonEvenOdd(anchor, outer.items)) continue;
+            const a = @abs(areas[oi]);
+            if (a < best_area) {
+                best_area = a;
+                best_parent = oi;
+            }
+        }
+        hole_parent[hi] = best_parent;
+    }
+
+    // Render each outer with its (deepest-matched) holes bridged in.
+    // Opposite-winding subpaths whose parent is null are standalone fills.
     for (subpaths, 0..) |outer, oi| {
-        if (used[oi]) continue;
         const is_outer = (areas[oi] > 0) == outer_positive;
         if (!is_outer) continue;
-        used[oi] = true;
 
         var holes = std.ArrayList([]const Point){};
         defer holes.deinit(allocator);
         for (subpaths, 0..) |hole, hi| {
-            if (used[hi]) continue;
-            const is_hole = (areas[hi] > 0) != outer_positive;
-            if (!is_hole) continue;
-            if (pointInPolygonEvenOdd(hole.items[0], outer.items)) {
-                try holes.append(allocator, hole.items);
-                used[hi] = true;
-            }
+            if (hole_parent[hi] == oi) try holes.append(allocator, hole.items);
         }
 
         if (holes.items.len == 0) {
@@ -932,23 +949,21 @@ fn fillCompoundPath(
         var merged = std.ArrayList(Point){};
         defer merged.deinit(allocator);
         try merged.appendSlice(allocator, outer.items);
-
         for (holes.items) |hole| {
             try spliceHoleIntoOuter(allocator, &merged, hole);
         }
-
         if (merged.items.len >= 3) {
             try earClipFill(allocator, mesh, merged.items, source);
         }
     }
 
-    // Pass 2: anything left over is an opposite-winding subpath that was
-    // NOT inside any outer — render it as a standalone filled polygon.
-    // (Example: entypo `address` has two opposite-winding shapes whose
-    // bounding boxes don't overlap — both should be solid fills, neither
-    // is a hole.)
+    // Pass 2: opposite-winding subpaths whose containment search found no
+    // parent (e.g. entypo `address` with two non-overlapping opposite-
+    // winding shapes) get rendered as standalone fills.
     for (subpaths, 0..) |sp, i| {
-        if (used[i]) continue;
+        const is_hole = (areas[i] > 0) != outer_positive;
+        if (!is_hole) continue;
+        if (hole_parent[i] != null) continue;
         try fillPolygonPhysical(allocator, mesh, sp.items, source, fade);
     }
 }
