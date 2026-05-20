@@ -11,7 +11,7 @@ const dvui = @import("dvui");
 const svg2tvg = @import("svg2tvg");
 const tvg = svg2tvg.tvg;
 const parsing = svg2tvg.tvg_parsing;
-// const earcut = @import("earcut.zig"); // WIP — port has correctness bugs, not yet wired up
+const earcut = @import("earcut.zig");
 
 const Point = dvui.Point.Physical;
 const Rect = dvui.Rect.Physical;
@@ -930,31 +930,25 @@ fn fillCompoundPath(
         hole_parent[hi] = best_parent;
     }
 
-    // Render each outer with its (deepest-matched) holes via bridge + ear-clip.
+    // Render each outer with its (deepest-matched) holes via earcut.
     for (subpaths, 0..) |outer, oi| {
         const is_outer = (areas[oi] > 0) == outer_positive;
         if (!is_outer) continue;
 
-        var holes = std.ArrayList([]const Point){};
-        defer holes.deinit(allocator);
+        // Flatten outer + holes into one Point buffer + hole-start indices.
+        var pts = std.ArrayList(earcut.Point){};
+        defer pts.deinit(allocator);
+        var hole_idx = std.ArrayList(usize){};
+        defer hole_idx.deinit(allocator);
+
+        for (outer.items) |p| try pts.append(allocator, .{ .x = p.x, .y = p.y });
         for (subpaths, 0..) |hole, hi| {
-            if (hole_parent[hi] == oi) try holes.append(allocator, hole.items);
+            if (hole_parent[hi] != oi) continue;
+            try hole_idx.append(allocator, pts.items.len);
+            for (hole.items) |p| try pts.append(allocator, .{ .x = p.x, .y = p.y });
         }
 
-        if (holes.items.len == 0) {
-            try fillPolygonPhysical(allocator, mesh, outer.items, source, fade);
-            continue;
-        }
-
-        var merged = std.ArrayList(Point){};
-        defer merged.deinit(allocator);
-        try merged.appendSlice(allocator, outer.items);
-        for (holes.items) |hole| {
-            try spliceHoleIntoOuter(allocator, &merged, hole);
-        }
-        if (merged.items.len >= 3) {
-            try earClipFill(allocator, mesh, merged.items, source);
-        }
+        try emitEarcutTriangulation(allocator, mesh, pts.items, hole_idx.items, source);
     }
 
     // Pass 2: opposite-winding subpaths with no containing outer (e.g.
@@ -967,9 +961,30 @@ fn fillCompoundPath(
     }
 }
 
-// emitEarcutTriangulation removed — earcut.zig port has correctness bugs
-// and isn't wired in.  Compound paths use bridge + best-ear ear-clip
-// instead (see `fillCompoundPath`).
+/// Run earcut on a flat point buffer with hole separators and append
+/// the resulting triangles to `mesh`.  Per-vertex colour from `source`.
+fn emitEarcutTriangulation(
+    allocator: std.mem.Allocator,
+    mesh: *MeshBuilder,
+    pts: []const earcut.Point,
+    hole_starts: []const usize,
+    source: ColorSource,
+) !void {
+    if (pts.len < 3) return;
+    const indices = earcut.triangulate(allocator, pts, hole_starts) catch return;
+    defer allocator.free(indices);
+    if (indices.len < 3) return;
+
+    try mesh.vtx.ensureUnusedCapacity(mesh.alloc, pts.len);
+    try mesh.idx.ensureUnusedCapacity(mesh.alloc, indices.len);
+    const base: dvui.Vertex.Index = @intCast(mesh.vtx.items.len);
+    for (pts) |ep| {
+        const p: Point = .{ .x = ep.x, .y = ep.y };
+        mesh.vtx.appendAssumeCapacity(.{ .pos = p, .col = source.sample(p) });
+        updateBounds(mesh, p);
+    }
+    for (indices) |i| mesh.idx.appendAssumeCapacity(@intCast(@as(u32, base) + i));
+}
 
 /// Even-odd point-in-polygon (Crossing Number test).  `poly` is a flat
 /// polygon (no holes).
