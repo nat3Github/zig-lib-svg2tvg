@@ -11,6 +11,7 @@ const dvui = @import("dvui");
 const svg2tvg = @import("svg2tvg");
 const tvg = svg2tvg.tvg;
 const parsing = svg2tvg.tvg_parsing;
+// const earcut = @import("earcut.zig"); // WIP — port has correctness bugs, not yet wired up
 
 const Point = dvui.Point.Physical;
 const Rect = dvui.Rect.Physical;
@@ -929,8 +930,7 @@ fn fillCompoundPath(
         hole_parent[hi] = best_parent;
     }
 
-    // Render each outer with its (deepest-matched) holes bridged in.
-    // Opposite-winding subpaths whose parent is null are standalone fills.
+    // Render each outer with its (deepest-matched) holes via bridge + ear-clip.
     for (subpaths, 0..) |outer, oi| {
         const is_outer = (areas[oi] > 0) == outer_positive;
         if (!is_outer) continue;
@@ -957,9 +957,8 @@ fn fillCompoundPath(
         }
     }
 
-    // Pass 2: opposite-winding subpaths whose containment search found no
-    // parent (e.g. entypo `address` with two non-overlapping opposite-
-    // winding shapes) get rendered as standalone fills.
+    // Pass 2: opposite-winding subpaths with no containing outer (e.g.
+    // entypo `address`) get rendered as standalone fills.
     for (subpaths, 0..) |sp, i| {
         const is_hole = (areas[i] > 0) != outer_positive;
         if (!is_hole) continue;
@@ -967,6 +966,10 @@ fn fillCompoundPath(
         try fillPolygonPhysical(allocator, mesh, sp.items, source, fade);
     }
 }
+
+// emitEarcutTriangulation removed — earcut.zig port has correctness bugs
+// and isn't wired in.  Compound paths use bridge + best-ear ear-clip
+// instead (see `fillCompoundPath`).
 
 /// Even-odd point-in-polygon (Crossing Number test).  `poly` is a flat
 /// polygon (no holes).
