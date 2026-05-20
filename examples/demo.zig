@@ -23,15 +23,22 @@ comptime {
 
 // --- Icon set: every feather icon -------------------------------------------
 
+// Icon set selection — flip ICON_SET to `icons.tvg.lucide` (or .feather, etc.)
+// at compile time.  Lucide has ~1600 icons; comptime iteration needs a higher
+// branch quota.
+const ICON_SET = icons.tvg.lucide;
+
 const ICON_LIST = blk: {
-    const decls = @typeInfo(icons.tvg.feather).@"struct".decls;
+    @setEvalBranchQuota(200_000);
+    const decls = @typeInfo(ICON_SET).@"struct".decls;
     var arr: [decls.len][]const u8 = undefined;
-    for (decls, 0..) |d, i| arr[i] = @field(icons.tvg.feather, d.name);
+    for (decls, 0..) |d, i| arr[i] = @field(ICON_SET, d.name);
     break :blk arr;
 };
 
 const ICON_NAMES = blk: {
-    const decls = @typeInfo(icons.tvg.feather).@"struct".decls;
+    @setEvalBranchQuota(200_000);
+    const decls = @typeInfo(ICON_SET).@"struct".decls;
     var arr: [decls.len][]const u8 = undefined;
     for (decls, 0..) |d, i| arr[i] = d.name;
     break :blk arr;
@@ -514,9 +521,10 @@ fn colorAsF32(c: dvui.Color) svg2tvg.Color {
 
 fn lookupSingleIconBytes() ?[]const u8 {
     const name = single_icon orelse return null;
-    inline for (@typeInfo(icons.tvg.feather).@"struct".decls) |d| {
+    @setEvalBranchQuota(200_000);
+    inline for (@typeInfo(ICON_SET).@"struct".decls) |d| {
         if (std.mem.eql(u8, d.name, name)) {
-            return @field(icons.tvg.feather, d.name);
+            return @field(ICON_SET, d.name);
         }
     }
     return null;

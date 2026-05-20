@@ -12,10 +12,20 @@ pub fn main() !void {
     _ = args.next();
     const icon_name = args.next() orelse "at-sign";
 
+    @setEvalBranchQuota(200_000);
     const bytes_opt: ?[]const u8 = blk: {
-        inline for (@typeInfo(icons.tvg.feather).@"struct".decls) |d| {
-            if (std.mem.eql(u8, d.name, icon_name)) {
-                break :blk @field(icons.tvg.feather, d.name);
+        const set_name = args.next() orelse "feather";
+        if (std.mem.eql(u8, set_name, "lucide")) {
+            inline for (@typeInfo(icons.tvg.lucide).@"struct".decls) |d| {
+                if (std.mem.eql(u8, d.name, icon_name)) {
+                    break :blk @field(icons.tvg.lucide, d.name);
+                }
+            }
+        } else {
+            inline for (@typeInfo(icons.tvg.feather).@"struct".decls) |d| {
+                if (std.mem.eql(u8, d.name, icon_name)) {
+                    break :blk @field(icons.tvg.feather, d.name);
+                }
             }
         }
         break :blk null;

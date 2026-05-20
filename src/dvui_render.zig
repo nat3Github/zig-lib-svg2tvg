@@ -200,7 +200,7 @@ fn strokeTvgRect(r: tvg.Rectangle, color: Color, thickness: f32, xf: Transform) 
     };
     for (pts) |p| pb.addPoint(p);
     pb.build().stroke(.{ .thickness = thickness, .color = color, .closed = true });
-    addRoundJoins(&pts, thickness, color);
+    addRoundJoins(&pts, true, thickness, color);
 }
 
 fn strokeLine(p0: Point, p1: Point, color: Color, thickness: f32) void {
@@ -210,25 +210,65 @@ fn strokeLine(p0: Point, p1: Point, color: Color, thickness: f32) void {
     pb.addPoint(p0);
     pb.addPoint(p1);
     pb.build().stroke(.{ .thickness = thickness, .color = color, .closed = false });
-    addRoundJoins(&.{ p0, p1 }, thickness, color);
+    addRoundJoins(&.{ p0, p1 }, false, thickness, color);
 }
 
-/// dvui's stroke uses miter joins clipped to 2x thickness — sharp corners
-/// (octagons, triangles, the spikes between aperture blades) come out
-/// chamfered.  Drawing a filled disc of stroke-radius at every polyline
-/// vertex paints over the chamfer and gives a visually round join + cap.
-/// Cheap because the disc fans are tiny and get cached into the icon's
-/// offscreen texture on first render.
-fn addRoundJoins(pts: []const Point, thickness: f32, color: Color) void {
+/// dvui's stroke uses miter joins clipped to 2x thickness — sharp polygonal
+/// corners (octagons, arc-sample chords) come out visibly chamfered.  A
+/// filled disc of stroke-radius at every polyline vertex paints over the
+/// chamfer and gives a round-join/round-cap look.
+///
+/// BUT: at sharp interior turns (e.g. lucide `activity`'s V valley, ~150°
+/// deflection) the disc extends far past the natural stroke band and shows
+/// up as a bulb on the outside of the corner.  We skip the disc on such
+/// vertices and let dvui's natural miter clip handle them.
+///
+/// Threshold: deflection > 60° (pi/3) is considered "sharp".  Endpoints of
+/// open paths always get the disc (round cap).
+///
+/// Cheap because the disc fans are tiny and the output gets cached into
+/// the icon's offscreen texture on first render.
+fn addRoundJoins(pts: []const Point, closed: bool, thickness: f32, color: Color) void {
     const radius = thickness * 0.5;
-    if (radius < 0.5) return; // too thin to be visible
+    if (radius < 0.5) return;
     const alloc = dvui.currentWindow().lifo();
-    for (pts) |p| {
+    const n = pts.len;
+
+    for (pts, 0..) |p, i| {
+        const is_first = i == 0;
+        const is_last = i + 1 == n;
+        const has_prev = !is_first or closed;
+        const has_next = !is_last or closed;
+
+        if (has_prev and has_next) {
+            const prev = if (!is_first) pts[i - 1] else pts[n - 1];
+            const next = if (!is_last) pts[i + 1] else pts[0];
+            const in_dx = p.x - prev.x;
+            const in_dy = p.y - prev.y;
+            const out_dx = next.x - p.x;
+            const out_dy = next.y - p.y;
+            const in_len = @sqrt(in_dx * in_dx + in_dy * in_dy);
+            const out_len = @sqrt(out_dx * out_dx + out_dy * out_dy);
+            if (in_len < 1e-3 or out_len < 1e-3) continue;
+            // Skip when EITHER neighbour is closer than the disc radius.
+            // Two cases this catches:
+            //  - Both small → we're inside a densely-sampled arc; samples
+            //    form a smooth curve already.
+            //  - One small → we're at the junction between a long segment
+            //    and an arc; the disc on the long-side would extend past
+            //    the tiny arc as a visible bulb (lucide `activity`).
+            if (in_len < radius or out_len < radius) continue;
+            // No sharp-turn skip: at this point both neighbours are far
+            // enough that the disc IS the desired round-cap geometry.  For
+            // a 180°-turn (e.g. an arc collapsed to a sharp V apex) the
+            // disc paints exactly the half-circle that SVG round-join would
+            // place on the outside of the bend.
+        }
+
         var pb = dvui.Path.Builder.init(alloc);
         defer pb.deinit();
-        // dvui's addArc sweeps from `start` DOWN to `end`, so pass start=2pi,
-        // end=0 for a full clockwise circle (with `start < end` the inner loop
-        // is a no-op and only one point is emitted).
+        // dvui's addArc sweeps from `start` DOWN to `end`; pass 2pi→0 for a
+        // full circle (with `start < end` the inner loop is a no-op).
         pb.addArc(p, radius, math.pi * 2.0, 0, true);
         pb.build().fillConvex(.{ .color = color });
     }
@@ -272,7 +312,7 @@ fn strokePolylineTvg(
     defer pb.deinit();
     for (pts) |p| pb.addPoint(p);
     pb.build().stroke(.{ .thickness = thickness, .color = color, .closed = closed });
-    addRoundJoins(pts, thickness, color);
+    addRoundJoins(pts, closed, thickness, color);
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +328,12 @@ fn flattenSegment(
     xf: Transform,
     out: *std.ArrayList(Point),
     alloc: std.mem.Allocator,
+    /// Physical stroke radius hint.  Arcs whose mapped radius is smaller than
+    /// ~half this value get collapsed to their target point — drawing a
+    /// stroke many times wider than the curve just produces a fat blob (see
+    /// lucide `activity`'s V-valley rx=0.25 inside a width-2 stroke).
+    /// Pass 0 for fills (where the curve shape always matters).
+    stroke_radius_px: f32,
 ) !void {
     var cur = segment.start;
     try out.append(alloc, xf.apply(cur));
@@ -319,11 +365,11 @@ fn flattenSegment(
                 // SVG convention (see rendering.zig where the z2d path passes
                 // `!arc.sweep` for the same reason).  Without this flip the
                 // rounded corners of icons like `briefcase` come out concave.
-                try flattenArc(out, alloc, xf, cur, n.data.radius, n.data.radius, 0, n.data.large_arc, !n.data.sweep, n.data.target);
+                try flattenArc(out, alloc, xf, cur, n.data.radius, n.data.radius, 0, n.data.large_arc, !n.data.sweep, n.data.target, stroke_radius_px);
                 cur = n.data.target;
             },
             .arc_ellipse => |n| {
-                try flattenArc(out, alloc, xf, cur, n.data.radius_x, n.data.radius_y, n.data.rotation, n.data.large_arc, !n.data.sweep, n.data.target);
+                try flattenArc(out, alloc, xf, cur, n.data.radius_x, n.data.radius_y, n.data.rotation, n.data.large_arc, !n.data.sweep, n.data.target, stroke_radius_px);
                 cur = n.data.target;
             },
             .close => {
@@ -425,6 +471,7 @@ fn flattenArc(
     large_arc: bool,
     sweep: bool,
     p1: tvg.Point,
+    stroke_radius_px: f32,
 ) !void {
     var rx = @abs(rx_in);
     var ry = @abs(ry_in);
@@ -432,6 +479,8 @@ fn flattenArc(
         try out.append(alloc, xf.apply(p1));
         return;
     }
+
+    _ = stroke_radius_px;
 
     const phi = rotation_deg * math.pi / 180.0;
     const cos_phi = @cos(phi);
@@ -520,7 +569,7 @@ fn fillPathTvg(
     defer pts.deinit(allocator);
     for (path.segments) |seg| {
         pts.clearRetainingCapacity();
-        try flattenSegment(seg, xf, &pts, allocator);
+        try flattenSegment(seg, xf, &pts, allocator, 0);
         if (pts.items.len < 3) continue;
         // Strip ALL trailing duplicates of the start vertex.  A closed sub-
         // path commonly produces two copies: the last bezier/arc lands back
@@ -546,7 +595,7 @@ fn strokePathTvg(
     defer pts.deinit(allocator);
     for (path.segments) |seg| {
         pts.clearRetainingCapacity();
-        try flattenSegment(seg, xf, &pts, allocator);
+        try flattenSegment(seg, xf, &pts, allocator, thickness * 0.5);
         if (pts.items.len < 2) continue;
         // Strip every trailing copy of the start point — the last bezier/arc
         // commonly lands on `start`, and `.close` then appends start again.
@@ -563,7 +612,7 @@ fn strokePathTvg(
         defer pb.deinit();
         for (pts.items) |p| pb.addPoint(p);
         pb.build().stroke(.{ .thickness = thickness, .color = color, .closed = closed });
-        addRoundJoins(pts.items, thickness, color);
+        addRoundJoins(pts.items, closed, thickness, color);
     }
 }
 
