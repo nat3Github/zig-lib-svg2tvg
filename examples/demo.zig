@@ -337,7 +337,14 @@ fn gui_frame() !bool {
                 }
             }
         }
-
+    }
+    {
+        var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .expand = .horizontal,
+            .padding = .all(6),
+            .background = true,
+        });
+        defer bar.deinit();
         dvui.label(@src(), "  dvui_render  initial {d:.1} us x {d}  cached {d:.1} us x {d}", .{
             bench_dvui.initialAvgUs(),
             bench_dvui.initial_count,
