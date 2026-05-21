@@ -2,14 +2,11 @@ const std = @import("std");
 const svg2tvg = @import("svg2tvg");
 const icons = @import("icons");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const alloc = gpa.allocator();
-    defer _ = gpa.deinit();
+pub fn main(init: std.process.Init) !void {
+    const alloc = init.gpa;
 
-    var args = try std.process.argsWithAllocator(alloc);
-    defer args.deinit();
-    _ = args.next();
+    var args = std.process.Args.iterate(init.minimal.args);
+    _ = args.next(); // skip argv[0]
     const icon_name = args.next() orelse "at-sign";
 
     @setEvalBranchQuota(200_000);
@@ -41,8 +38,8 @@ pub fn main() !void {
         return;
     };
 
-    var fbs = std.io.fixedBufferStream(bytes);
-    var parser = try svg2tvg.tvg_parsing.Parser(@TypeOf(fbs.reader())).init(alloc, fbs.reader());
+    var reader = std.Io.Reader.fixed(bytes);
+    var parser = try svg2tvg.tvg_parsing.Parser().init(alloc, &reader);
     defer parser.deinit();
     std.debug.print("icon {s}: {d}x{d}, {d} colors, {d} bytes\n", .{ icon_name, parser.header.width, parser.header.height, parser.color_table.len, bytes.len });
 

@@ -1414,10 +1414,6 @@ fn collapseRunDuplicates(pts: *std.ArrayList(Point)) void {
     pts.shrinkRetainingCapacity(w);
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 test "isConvex square" {
     const sq = [_]Point{
         .{ .x = 0, .y = 0 },
@@ -1438,10 +1434,4 @@ test "isConvex concave L" {
         .{ .x = 0, .y = 10 },
     };
     try std.testing.expect(!isConvex(&l));
-}
-
-test "earClipFill L emits n-2 triangles" {
-    // Can't render without an active dvui window; just exercise the tess
-    // bookkeeping via the helper indirectly.  Skip if no window present.
-    // (Smoke test — the dvui rendering call is guarded.)
 }

@@ -40,4 +40,68 @@ pub fn build(b: *std.Build) void {
         .root_module = this_module,
     }));
     b.step("test", "Run unit tests").dependOn(&tests.step);
+
+    // ------------------------------------------------------------------------
+    // Demo app — renders feather icons via dvui_render vs z2d→texture.
+    // Gated behind `-Ddemo=true` so library consumers never fetch these deps.
+    // ------------------------------------------------------------------------
+    const want_demo = b.option(bool, "demo", "Build demo + dump examples") orelse false;
+    if (want_demo) {
+        const maybe_icons = b.lazyDependency("icons", .{
+            .target = target,
+            .optimize = optimize,
+        });
+        const maybe_dvui = b.lazyDependency("dvui", .{
+            .target = target,
+            .optimize = optimize,
+            .backend = @as([]const u8, "sdl3"),
+        });
+        const maybe_z2d_demo = b.lazyDependency("z2d", .{
+            .target = target,
+            .optimize = optimize,
+        });
+
+        if (maybe_icons != null and maybe_dvui != null and maybe_z2d_demo != null) {
+            const icons_mod = maybe_icons.?.module("icons");
+            const dvui_mod = maybe_dvui.?.module("dvui_sdl3");
+            const sdl_backend_mod = maybe_dvui.?.module("sdl3");
+
+            // Inject dvui into svg2tvg_dvui so demo can use both renderers.
+            dvui_module.addImport("dvui", dvui_mod);
+
+            const demo_mod = b.createModule(.{
+                .root_source_file = b.path("examples/demo.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            demo_mod.addImport("dvui", dvui_mod);
+            demo_mod.addImport("sdl-backend", sdl_backend_mod);
+            demo_mod.addImport("svg2tvg", this_module);
+            demo_mod.addImport("svg2tvg_dvui", dvui_module);
+            demo_mod.addImport("icons", icons_mod);
+
+            const demo_exe = b.addExecutable(.{
+                .name = "svg2tvg-demo",
+                .root_module = demo_mod,
+            });
+            b.installArtifact(demo_exe);
+            const run_demo = b.addRunArtifact(demo_exe);
+            run_demo.step.dependOn(b.getInstallStep());
+            b.step("demo", "Run the dvui_render vs z2d demo").dependOn(&run_demo.step);
+
+            // ---- dump: print TVG command structure of one icon ----
+            const dump_mod = b.createModule(.{
+                .root_source_file = b.path("examples/dump.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            dump_mod.addImport("svg2tvg", this_module);
+            dump_mod.addImport("icons", icons_mod);
+            const dump_exe = b.addExecutable(.{ .name = "svg2tvg-dump", .root_module = dump_mod });
+            b.installArtifact(dump_exe);
+            const run_dump = b.addRunArtifact(dump_exe);
+            if (b.args) |a| run_dump.addArgs(a);
+            b.step("dump", "Dump TVG commands for an icon (zig build dump -- <name>)").dependOn(&run_dump.step);
+        }
+    }
 }
