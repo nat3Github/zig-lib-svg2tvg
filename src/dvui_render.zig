@@ -150,8 +150,8 @@ pub fn appendTvg(
     rect: Rect,
     opts: RenderOptions,
 ) !void {
-    var fbs = std.io.fixedBufferStream(tvg_bytes);
-    var parser = try parsing.Parser(@TypeOf(fbs.reader())).init(scratch_alloc, fbs.reader());
+    var fbs: std.Io.Reader = .fixed(tvg_bytes);
+    var parser = try parsing.Parser().init(scratch_alloc, &fbs);
     defer parser.deinit();
 
     const xf = Transform.fromRect(rect, @floatFromInt(parser.header.width), @floatFromInt(parser.header.height), opts.keep_aspect);
@@ -214,49 +214,61 @@ fn renderCommand(
 ) !void {
     switch (cmd) {
         .fill_polygon => |fp| {
-            try fillPolygonTvg(allocator, mesh, fp.vertices, fp.style, color_table, xf, opts);
+            if (!opts.disable_fill) {
+                try fillPolygonTvg(allocator, mesh, fp.vertices, fp.style, color_table, xf, opts);
+            }
         },
         .fill_rectangles => |fr| {
-            const col = resolveStyleSource(fr.style, color_table, opts, xf);
-            for (fr.rectangles) |r| try fillTvgRect(allocator, mesh, r, col, xf);
+            if (!opts.disable_fill) {
+                const col = resolveStyleSource(fr.style, color_table, opts, xf, false);
+                for (fr.rectangles) |r| try fillTvgRect(allocator, mesh, r, col, xf);
+            }
         },
         .fill_path => |fp| {
-            try fillPathTvg(allocator, mesh, fp.path, fp.style, color_table, xf, opts);
+            if (!opts.disable_fill) {
+                try fillPathTvg(allocator, mesh, fp.path, fp.style, color_table, xf, opts);
+            }
         },
         .draw_lines => |dl| {
-            const col = resolveStyleSource(dl.style, color_table, opts, xf);
-            const thickness = dl.line_width * xf.meanScale();
+            const col = resolveStyleSource(dl.style, color_table, opts, xf, true);
+            const thickness = (opts.stroke_width_override orelse dl.line_width) * xf.meanScale();
             for (dl.lines) |ln| try strokeLine(allocator, mesh, xf.apply(ln.start), xf.apply(ln.end), col, thickness);
         },
         .draw_line_loop => |ls| {
-            const col = resolveStyleSource(ls.style, color_table, opts, xf);
-            try strokePolylineTvg(allocator, mesh, ls.vertices, true, ls.line_width, col, xf);
+            const col = resolveStyleSource(ls.style, color_table, opts, xf, true);
+            try strokePolylineTvg(allocator, mesh, ls.vertices, true, opts.stroke_width_override orelse ls.line_width, col, xf);
         },
         .draw_line_strip => |ls| {
-            const col = resolveStyleSource(ls.style, color_table, opts, xf);
-            try strokePolylineTvg(allocator, mesh, ls.vertices, false, ls.line_width, col, xf);
+            const col = resolveStyleSource(ls.style, color_table, opts, xf, true);
+            try strokePolylineTvg(allocator, mesh, ls.vertices, false, opts.stroke_width_override orelse ls.line_width, col, xf);
         },
         .draw_line_path => |dp| {
-            const col = resolveStyleSource(dp.style, color_table, opts, xf);
-            try strokePathTvg(allocator, mesh, dp.path, dp.line_width, col, xf);
+            const col = resolveStyleSource(dp.style, color_table, opts, xf, true);
+            try strokePathTvg(allocator, mesh, dp.path, opts.stroke_width_override orelse dp.line_width, col, xf);
         },
         .outline_fill_polygon => |o| {
-            try fillPolygonTvg(allocator, mesh, o.vertices, o.fill_style, color_table, xf, opts);
-            const stroke_col = resolveStyleSource(o.line_style, color_table, opts, xf);
-            try strokePolylineTvg(allocator, mesh, o.vertices, true, o.line_width, stroke_col, xf);
+            if (!opts.disable_fill) {
+                try fillPolygonTvg(allocator, mesh, o.vertices, o.fill_style, color_table, xf, opts);
+            }
+            const stroke_col = resolveStyleSource(o.line_style, color_table, opts, xf, true);
+            try strokePolylineTvg(allocator, mesh, o.vertices, true, opts.stroke_width_override orelse o.line_width, stroke_col, xf);
         },
         .outline_fill_rectangles => |o| {
-            const fill_col = resolveStyleSource(o.fill_style, color_table, opts, xf);
-            const stroke_col = resolveStyleSource(o.line_style, color_table, opts, xf);
-            const thickness = o.line_width * xf.meanScale();
+            const stroke_col = resolveStyleSource(o.line_style, color_table, opts, xf, true);
+            const thickness = (opts.stroke_width_override orelse o.line_width) * xf.meanScale();
             for (o.rectangles) |r| {
-                try fillTvgRect(allocator, mesh, r, fill_col, xf);
+                if (!opts.disable_fill) {
+                    const fill_col = resolveStyleSource(o.fill_style, color_table, opts, xf, false);
+                    try fillTvgRect(allocator, mesh, r, fill_col, xf);
+                }
                 try strokeTvgRect(allocator, mesh, r, stroke_col, thickness, xf);
             }
         },
         .outline_fill_path => |o| {
-            try fillPathTvg(allocator, mesh, o.path, o.fill_style, color_table, xf, opts);
-            try strokePathTvg(allocator, mesh, o.path, o.line_width, resolveStyleSource(o.line_style, color_table, opts, xf), xf);
+            if (!opts.disable_fill) {
+                try fillPathTvg(allocator, mesh, o.path, o.fill_style, color_table, xf, opts);
+            }
+            try strokePathTvg(allocator, mesh, o.path, opts.stroke_width_override orelse o.line_width, resolveStyleSource(o.line_style, color_table, opts, xf, true), xf);
         },
     }
 }
@@ -343,8 +355,13 @@ fn lerpColor(a: Color, b: Color, t: f32) Color {
 /// Build a `ColorSource` from a TVG style.  Override forces flat.  Gradient
 /// endpoints are transformed into physical pixel space so per-vertex
 /// sampling is a single dot product / distance.
-fn resolveStyleSource(style: tvg.Style, color_table: []const tvg.Color, opts: RenderOptions, xf: Transform) ColorSource {
+fn resolveStyleSource(style: tvg.Style, color_table: []const tvg.Color, opts: RenderOptions, xf: Transform, is_stroke: bool) ColorSource {
     if (opts.color_override) |c| return .{ .flat = Color.PMA.fromColor(c) };
+    if (is_stroke) {
+        if (opts.stroke_color_override) |c| return .{ .flat = Color.PMA.fromColor(c) };
+    } else {
+        if (opts.fill_color_override) |c| return .{ .flat = Color.PMA.fromColor(c) };
+    }
     return switch (style) {
         .flat => |idx| .{ .flat = Color.PMA.fromColor(tvgColorToDvui(color_table[idx])) },
         .linear => |g| .{ .linear = .{
@@ -561,7 +578,7 @@ fn fillPolygonTvg(
     opts: RenderOptions,
 ) !void {
     if (vertices.len < 3) return;
-    const color = resolveStyleSource(style, color_table, opts, xf);
+    const color = resolveStyleSource(style, color_table, opts, xf, false);
 
     // Project to physical pixels first; the polygon may be concave so we
     // run an ear-clip tessellation on the result.
@@ -840,19 +857,19 @@ fn fillPathTvg(
     xf: Transform,
     opts: RenderOptions,
 ) !void {
-    const source = resolveStyleSource(style, color_table, opts, xf);
+    const source = resolveStyleSource(style, color_table, opts, xf, false);
 
     // Flatten every segment into its own polyline (already cleaned of
     // trailing duplicates).  We need them all in hand before we can
     // classify outers vs. holes by winding direction.
-    var subpaths = std.ArrayList(std.ArrayList(Point)){};
+    var subpaths = std.ArrayList(std.ArrayList(Point)).empty;
     defer {
         for (subpaths.items) |*sp| sp.deinit(allocator);
         subpaths.deinit(allocator);
     }
 
     for (path.segments) |seg| {
-        var pts = std.ArrayList(Point){};
+        var pts = std.ArrayList(Point).empty;
         errdefer pts.deinit(allocator);
         try flattenSegment(seg, xf, &pts, allocator, 0);
         if (pts.items.len < 3) {
@@ -944,9 +961,9 @@ fn fillCompoundPath(
         if (!is_outer) continue;
 
         // Flatten outer + holes into one Point buffer + hole-start indices.
-        var pts = std.ArrayList(earcut.Point){};
+        var pts = std.ArrayList(earcut.Point).empty;
         defer pts.deinit(allocator);
-        var hole_idx = std.ArrayList(usize){};
+        var hole_idx = std.ArrayList(usize).empty;
         defer hole_idx.deinit(allocator);
 
         for (outer.items) |p| try pts.append(allocator, .{ .x = p.x, .y = p.y });
@@ -1051,7 +1068,7 @@ fn spliceHoleIntoOuter(
     const bi = bridge_idx.?;
     const bridge_v = outer.items[bi];
 
-    var spliced = std.ArrayList(Point){};
+    var spliced = std.ArrayList(Point).empty;
     defer spliced.deinit(allocator);
     try spliced.ensureUnusedCapacity(allocator, outer.items.len + hole.len + 2);
     try spliced.appendSlice(allocator, outer.items[0 .. bi + 1]);
@@ -1078,7 +1095,7 @@ fn strokePathTvg(
     xf: Transform,
 ) !void {
     const thickness = line_width * xf.meanScale();
-    var pts = std.ArrayList(Point){};
+    var pts = std.ArrayList(Point).empty;
     defer pts.deinit(allocator);
     for (path.segments) |seg| {
         pts.clearRetainingCapacity();

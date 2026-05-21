@@ -28,7 +28,7 @@ pub fn triangulate(
     points: []const Point,
     hole_starts: []const usize,
 ) ![]u32 {
-    var tris = std.ArrayList(u32){};
+    var tris = std.ArrayList(u32).empty;
     errdefer tris.deinit(alloc);
 
     if (points.len < 3) return tris.toOwnedSlice(alloc);
@@ -367,7 +367,7 @@ fn splitEarcut(
 // ---------------------------------------------------------------------------
 
 fn eliminateHoles(alloc: std.mem.Allocator, data: []const Point, hole_starts: []const usize, outer_in: *Node) !*Node {
-    var queue = std.ArrayList(*Node){};
+    var queue = std.ArrayList(*Node).empty;
     defer queue.deinit(alloc);
 
     var i: usize = 0;
