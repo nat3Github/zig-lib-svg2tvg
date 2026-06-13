@@ -1,0 +1,29 @@
+.{
+    .name = .svg2tvg_examples,
+    .fingerprint = 0x17ffed4d28a8b59,
+    .minimum_zig_version = "0.16.0",
+    .version = "0.0.0",
+    .dependencies = .{
+        .svg2tvg = .{
+            .path = "..",
+        },
+        .z2d = .{
+            .url = "git+https://github.com/vancluever/z2d#2f661fb5120f65e875bf6f37d082674c08858c7b",
+            .hash = "z2d-0.11.1-pre-j5P_HtbzDwADWjqO2TdR36XPyD-GdJRwRywnnhjalqej",
+        },
+        .dvui = .{
+            .url = "git+https://github.com/david-vanderson/dvui#de4156b7f34b817e4dcc91eebb386a93d0157b6f",
+            .hash = "dvui-0.5.0-dev-AQFJmdMl9gARCQgSVXDKx8S4clhAdQpH8TkeQQtAGq3K",
+        },
+        .icons = .{
+            .url = "git+https://github.com/nat3Github/zig-lib-icons.git#b7299b19fa11caa5be93ef49743d8fc31a4bf9a0",
+            .hash = "icons-0.1.0-iJxA-VrGMwAVIStBxqDPFeC3wdnANtYyDrNfYXNz95OW",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "demo.zig",
+        "dump.zig",
+    },
+}
