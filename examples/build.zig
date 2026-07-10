@@ -9,7 +9,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const svg2tvg_mod = svg2tvg_dep.module("svg2tvg");
-    const svg2tvg_dvui = svg2tvg_dep.module("svg2tvg_dvui");
 
     const icons_mod = b.dependency("icons", .{
         .target = target,
@@ -24,10 +23,12 @@ pub fn build(b: *std.Build) void {
     const dvui_mod = dvui_dep.module("dvui_sdl3");
     const sdl_backend_mod = dvui_dep.module("sdl3");
 
-    // Inject dvui into svg2tvg_dvui so demo can use both renderers.
-    svg2tvg_dvui.addImport("dvui", dvui_mod);
+    const z2d_mod = b.dependency("z2d", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("z2d");
 
-    // ---- demo: dvui_render vs z2d→texture ----
+    // ---- demo: z2d raster -> dvui texture ----
     const demo_mod = b.createModule(.{
         .root_source_file = b.path("demo.zig"),
         .target = target,
@@ -36,7 +37,7 @@ pub fn build(b: *std.Build) void {
     demo_mod.addImport("dvui", dvui_mod);
     demo_mod.addImport("sdl-backend", sdl_backend_mod);
     demo_mod.addImport("svg2tvg", svg2tvg_mod);
-    demo_mod.addImport("svg2tvg_dvui", svg2tvg_dvui);
+    demo_mod.addImport("z2d", z2d_mod);
     demo_mod.addImport("icons", icons_mod);
 
     const demo_exe = b.addExecutable(.{
@@ -46,7 +47,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(demo_exe);
     const run_demo = b.addRunArtifact(demo_exe);
     run_demo.step.dependOn(b.getInstallStep());
-    b.step("demo", "Run the dvui_render vs z2d demo").dependOn(&run_demo.step);
+    b.step("demo", "Run the z2d raster demo").dependOn(&run_demo.step);
 
     // ---- dump: print TVG command structure of one icon ----
     const dump_mod = b.createModule(.{

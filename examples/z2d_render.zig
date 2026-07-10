@@ -4,12 +4,12 @@ const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
 const math = std.math;
 
-const root = @import("root.zig");
-const ut = @import("util.zig");
-const tvg = root.tvg;
+const svg2tvg = @import("svg2tvg");
+const ut = svg2tvg.ut;
+const tvg = svg2tvg.tvg;
 const z2d = @import("z2d");
 const ldrw = @import("stroke.zig");
-const Svg = root.conversion.Svg;
+const Svg = svg2tvg.conversion.Svg;
 
 const DrawCommand = tvg.parsing.DrawCommand;
 const Style = tvg.Style;

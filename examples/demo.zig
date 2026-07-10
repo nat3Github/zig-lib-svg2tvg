@@ -1,11 +1,14 @@
-//! svg2tvg demo: renders the entire feather icon set via two paths
-//! side-by-side inside a shared scroll area:
-//!   - left  panel: direct dvui triangle renderer (svg2tvg_dvui.renderTvg)
-//!   - right panel: z2d raster → dvui Texture
+//! svg2tvg demo: renders the entire feather icon set via the z2d raster
+//! path (z2d_render.zig, moved from svg2tvg core -> examples) into a
+//! dvui Texture, inside a scroll area.
 //!
-//! BOTH paths cache their rendered output keyed by (icon pointer, cell size).
-//! The top bar reports separate stats for cache-miss (initial) renders and
-//! cache-hit (subsequent) renders so the cost difference is visible.
+//! Output is cached keyed by (icon pointer, cell size). The top bar reports
+//! separate stats for cache-miss (initial) renders and cache-hit
+//! (subsequent) renders so the cost is visible.
+//!
+//! NOTE: svg2tvg core no longer ships a renderer -- dvui now hosts its own
+//! direct TVG->triangle renderer, and this z2d raster renderer is
+//! example-only code demonstrating the alternate raster-to-texture path.
 //!
 //! Ported from dvui v0.4.0 to dvui main (0.16 stdlib):
 //!   - main() now takes std.process.Init (Zig 0.16 entry-point convention)
@@ -25,7 +28,7 @@ const dvui = @import("dvui");
 const SDLBackend = @import("sdl-backend");
 
 const svg2tvg = @import("svg2tvg");
-const svg2tvg_dvui = @import("svg2tvg_dvui");
+const z2d_render = @import("z2d_render.zig");
 const icons = @import("icons");
 
 comptime {
@@ -86,7 +89,6 @@ var g_io: std.Io = undefined;
 var g_backend: ?SDLBackend = null;
 var g_win: ?*dvui.Window = null;
 
-// One ScrollInfo shared between the two columns so they scroll together.
 var shared_scroll: dvui.ScrollInfo = .{};
 
 // CLI flag: --icon <name> renders a single icon at multiple sizes.
@@ -103,19 +105,12 @@ fn keyHash(k: CacheKey) u64 {
     return h;
 }
 
-const DvuiCacheEntry = struct {
-    mesh: svg2tvg_dvui.MeshBuilder,
-    last_seen_frame: u64,
-};
-const DvuiCacheMap = std.AutoHashMap(u64, DvuiCacheEntry);
-
 const Z2dCacheEntry = struct {
     tex: dvui.Texture,
     last_seen_frame: u64,
 };
 const Z2dCacheMap = std.AutoHashMap(u64, Z2dCacheEntry);
 
-var dvui_cache: ?DvuiCacheMap = null;
 var z2d_cache: ?Z2dCacheMap = null;
 
 var frame_index: u64 = 0;
@@ -139,52 +134,29 @@ const Bench = struct {
     }
 };
 
-var bench_dvui: Bench = .{};
 var bench_z2d: Bench = .{};
 
 var hovered_name: ?[]const u8 = null;
 
 fn clearCaches() void {
-    {
-        var it = dvui_cache.?.iterator();
-        while (it.next()) |entry| entry.value_ptr.mesh.deinit();
-        dvui_cache.?.clearRetainingCapacity();
-    }
-    {
-        var it = z2d_cache.?.iterator();
-        while (it.next()) |entry| entry.value_ptr.tex.destroyLater();
-        z2d_cache.?.clearRetainingCapacity();
-    }
-    bench_dvui.reset();
+    var it = z2d_cache.?.iterator();
+    while (it.next()) |entry| entry.value_ptr.tex.destroyLater();
+    z2d_cache.?.clearRetainingCapacity();
     bench_z2d.reset();
 }
 
 fn evictStaleCacheEntries() void {
     const gpa = g_gpa;
-    {
-        var to_remove = std.ArrayList(u64).empty;
-        defer to_remove.deinit(gpa);
-        var it = dvui_cache.?.iterator();
-        while (it.next()) |entry| {
-            if (entry.value_ptr.last_seen_frame != frame_index) {
-                entry.value_ptr.mesh.deinit();
-                to_remove.append(gpa, entry.key_ptr.*) catch {};
-            }
+    var to_remove = std.ArrayList(u64).empty;
+    defer to_remove.deinit(gpa);
+    var it = z2d_cache.?.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.last_seen_frame != frame_index) {
+            entry.value_ptr.tex.destroyLater();
+            to_remove.append(gpa, entry.key_ptr.*) catch {};
         }
-        for (to_remove.items) |k| _ = dvui_cache.?.remove(k);
     }
-    {
-        var to_remove = std.ArrayList(u64).empty;
-        defer to_remove.deinit(gpa);
-        var it = z2d_cache.?.iterator();
-        while (it.next()) |entry| {
-            if (entry.value_ptr.last_seen_frame != frame_index) {
-                entry.value_ptr.tex.destroyLater();
-                to_remove.append(gpa, entry.key_ptr.*) catch {};
-            }
-        }
-        for (to_remove.items) |k| _ = z2d_cache.?.remove(k);
-    }
+    for (to_remove.items) |k| _ = z2d_cache.?.remove(k);
 }
 
 // --- main -------------------------------------------------------------------
@@ -210,23 +182,17 @@ pub fn main(init: std.process.Init) !void {
     }
     defer if (single_icon) |p| gpa.free(p);
 
-    dvui_cache = DvuiCacheMap.init(gpa);
     z2d_cache = Z2dCacheMap.init(gpa);
-    defer {
-        var it = dvui_cache.?.iterator();
-        while (it.next()) |entry| entry.value_ptr.mesh.deinit();
-        dvui_cache.?.deinit();
-        z2d_cache.?.deinit();
-    }
+    defer z2d_cache.?.deinit();
 
     var backend = try SDLBackend.initWindow(.{
         .io = init.io,
         .environ_map = init.environ_map,
         .allocator = gpa,
-        .size = .{ .w = 1400.0, .h = 800.0 },
-        .min_size = .{ .w = 600.0, .h = 400.0 },
+        .size = .{ .w = 900.0, .h = 800.0 },
+        .min_size = .{ .w = 400.0, .h = 400.0 },
         .vsync = true,
-        .title = "svg2tvg - dvui_render vs z2d (cached)",
+        .title = "svg2tvg - z2d raster demo (cached)",
     });
     g_backend = backend;
     defer backend.deinit();
@@ -299,7 +265,6 @@ fn gui_frame() !bool {
             if (dvui.button(@src(), @tagName(s), .{}, .{ .id_extra = i })) {
                 if (active_set != s) {
                     active_set = s;
-                    bench_dvui.reset();
                     bench_z2d.reset();
                 }
             }
@@ -312,13 +277,6 @@ fn gui_frame() !bool {
             .background = true,
         });
         defer bar.deinit();
-        dvui.label(@src(), "  dvui_render  initial {d:.1} us x {d}  cached {d:.1} us x {d}", .{
-            bench_dvui.initialAvgUs(),
-            bench_dvui.initial_count,
-            bench_dvui.cachedAvgUs(),
-            bench_dvui.cached_count,
-        }, .{});
-
         dvui.label(@src(), "  z2d  initial {d:.1} us x {d}  cached {d:.1} us x {d}", .{
             bench_z2d.initialAvgUs(),
             bench_z2d.initial_count,
@@ -343,40 +301,16 @@ fn gui_frame() !bool {
     }, .{ .expand = .both });
     defer scroll.deinit();
 
-    const active_len = listFor(active_set).bytes.len;
-    const total_rows = (active_len + GRID_COLS - 1) / GRID_COLS;
-    const total_h: f32 = @as(f32, @floatFromInt(total_rows)) * CELL_SIZE + 24;
-
-    var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{
-        .expand = .horizontal,
-        .min_size_content = .{ .h = total_h },
-    });
-    defer hbox.deinit();
-
-    try renderColumn(0, .dvui_render, "dvui_render (triangles, cached)", &keep_running);
-    try renderColumn(1, .z2d, "z2d -> texture (cached)", &keep_running);
+    try renderGrid();
 
     return keep_running;
 }
 
-const Method = enum { dvui_render, z2d };
-
-fn renderColumn(id_extra: usize, method: Method, title: []const u8, keep_running: *bool) !void {
-    _ = keep_running;
-    var col = dvui.box(@src(), .{ .dir = .vertical }, .{
-        .expand = .both,
-        .padding = .all(6),
-        .id_extra = id_extra,
-    });
-    defer col.deinit();
-
-    dvui.label(@src(), "{s}", .{title}, .{ .id_extra = id_extra });
-
+fn renderGrid() !void {
     // --icon mode: render a single icon at several sizes, bypass grid layout.
     if (lookupSingleIconBytes()) |bytes| {
         var icon_box = dvui.box(@src(), .{ .dir = .vertical }, .{
             .min_size_content = .{ .w = 540, .h = 970 },
-            .id_extra = id_extra,
         });
         defer icon_box.deinit();
         const icon_rs = icon_box.data().contentRectScale();
@@ -385,10 +319,7 @@ fn renderColumn(id_extra: usize, method: Method, title: []const u8, keep_running
         var y_off: f32 = icon_rs.r.y + 4;
         for (sizes) |s| {
             const r = dvui.Rect.Physical{ .x = icon_rs.r.x + 4, .y = y_off, .w = s, .h = s };
-            switch (method) {
-                .dvui_render => try drawCachedDvui(bytes, r),
-                .z2d => try drawCachedZ2d(bytes, r),
-            }
+            try drawCachedZ2d(bytes, r);
             y_off += s + 8;
         }
         return;
@@ -401,7 +332,6 @@ fn renderColumn(id_extra: usize, method: Method, title: []const u8, keep_running
 
     var grid_box = dvui.box(@src(), .{ .dir = .vertical }, .{
         .min_size_content = .{ .w = grid_w, .h = grid_h },
-        .id_extra = id_extra,
     });
     defer grid_box.deinit();
 
@@ -417,89 +347,19 @@ fn renderColumn(id_extra: usize, method: Method, title: []const u8, keep_running
             .w = cell_phys - 8,
             .h = cell_phys - 8,
         };
-        switch (method) {
-            .dvui_render => try drawCachedDvui(bytes, cell),
-            .z2d => try drawCachedZ2d(bytes, cell),
-        }
+        try drawCachedZ2d(bytes, cell);
         if (cell.contains(dvui.currentWindow().mouse_pt)) {
             hovered_name = list.names[i];
         }
     }
 }
 
-// --- dvui_render with TRIANGLE-MESH cache ----------------------------------
+// --- z2d with PMA-texture cache --------------------------------------------
 
 fn nanoNow() i128 {
     if (g_backend) |*b| return b.nanoTime();
     return 0;
 }
-
-fn drawCachedDvui(bytes: []const u8, cell: dvui.Rect.Physical) !void {
-    const gpa = g_gpa;
-    const w_i: i32 = @intFromFloat(@floor(cell.w));
-    const h_i: i32 = @intFromFloat(@floor(cell.h));
-    if (w_i <= 0 or h_i <= 0) return;
-    const w_u: u32 = @intCast(w_i);
-    const h_u: u32 = @intCast(h_i);
-    const key = keyHash(.{ .ptr = @intFromPtr(bytes.ptr), .w = w_u, .h = h_u });
-
-    if (dvui.clipGet().intersect(cell).empty()) return;
-
-    if (dvui_cache.?.getPtr(key)) |cached| {
-        cached.last_seen_frame = frame_index;
-        const t0 = nanoNow();
-        try submitMeshTranslated(&cached.mesh, cell);
-        bench_dvui.cached_total_ns += @intCast(nanoNow() - t0);
-        bench_dvui.cached_count += 1;
-        return;
-    }
-
-    const t0 = nanoNow();
-    var mesh = svg2tvg_dvui.MeshBuilder.init(gpa);
-    errdefer mesh.deinit();
-
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    defer arena.deinit();
-
-    const local_rect = dvui.Rect.Physical{
-        .x = 0,
-        .y = 0,
-        .w = @as(f32, @floatFromInt(w_u)),
-        .h = @as(f32, @floatFromInt(h_u)),
-    };
-    svg2tvg_dvui.appendTvg(arena.allocator(), &mesh, bytes, local_rect, .{
-        .color_override = ICON_COLOR,
-        .keep_aspect = true,
-    }) catch {};
-
-    try dvui_cache.?.put(key, .{ .mesh = mesh, .last_seen_frame = frame_index });
-    if (dvui_cache.?.getPtr(key)) |cached| {
-        try submitMeshTranslated(&cached.mesh, cell);
-    }
-
-    bench_dvui.initial_total_ns += @intCast(nanoNow() - t0);
-    bench_dvui.initial_count += 1;
-}
-
-fn submitMeshTranslated(mesh: *svg2tvg_dvui.MeshBuilder, cell: dvui.Rect.Physical) !void {
-    if (mesh.idx.items.len == 0) return;
-    const cw = dvui.currentWindow();
-    const alloc = cw.lifo();
-
-    var tri = mesh.toTriangles().dupe(alloc) catch return;
-    defer tri.deinit(alloc);
-
-    for (tri.vertexes) |*v| {
-        v.pos.x += cell.x;
-        v.pos.y += cell.y;
-    }
-    tri.bounds.x += cell.x;
-    tri.bounds.y += cell.y;
-
-    dvui.renderTriangles(tri, null) catch {};
-}
-
-// --- z2d with PMA-texture cache --------------------------------------------
 
 const PixelShim = struct {
     pixels: []u8,
@@ -549,7 +409,7 @@ fn drawCachedZ2d(bytes: []const u8, cell: dvui.Rect.Physical) !void {
     var shim = PixelShim{ .pixels = buf, .width = w_i, .height = h_i };
 
     var reader = std.Io.Reader.fixed(bytes);
-    svg2tvg.renderStream(g_io, alloc, &shim, &reader, .{
+    z2d_render.renderStream(g_io, alloc, &shim, &reader, .{
         .overwrite_fill = colorAsF32(ICON_COLOR),
         .overwrite_stroke = colorAsF32(ICON_COLOR),
     }) catch return;

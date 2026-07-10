@@ -1,9 +1,6 @@
 /// Alternative Stroking implementation / Alternative to stroking with z2d
 const std = @import("std");
-const root = @import("root.zig");
-const Pixel = root.Pixel;
 const Color = [4]u8;
-const Image = root;
 const math = std.math;
 
 fn fpart(x: f32) f32 {
