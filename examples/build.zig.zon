@@ -1,7 +1,7 @@
 .{
     .name = .svg2tvg_examples,
     .fingerprint = 0x17ffed4d28a8b59,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .version = "0.0.0",
     .dependencies = .{
         .svg2tvg = .{

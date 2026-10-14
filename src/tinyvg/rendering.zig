@@ -62,7 +62,7 @@ pub fn renderStream(
     };
 
     const super_scale: u32 = if (anti_alias) |factor|
-        @intFromEnum(factor)
+        @backingInt(factor)
     else
         1;
 

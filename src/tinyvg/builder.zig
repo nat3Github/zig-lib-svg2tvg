@@ -45,7 +45,7 @@ pub fn Builder(comptime Writer: type) type {
             try self.writer.writeAll(&[_]u8{
                 0x72, 0x56, // magic
                 tvg.current_version, // version
-                @intFromEnum(scale) | (@as(u8, @intFromEnum(color_encoding)) << 4) | (@as(u8, @intFromEnum(range)) << 6),
+                @backingInt(scale) | (@as(u8, @backingInt(color_encoding)) << 4) | (@as(u8, @backingInt(range)) << 6),
             });
             switch (range) {
                 .reduced => {
@@ -230,7 +230,7 @@ pub fn Builder(comptime Writer: type) type {
         fn writeOutlineFillHeader(self: *Self, command: tvg.Command, fill_style: tvg.Style, line_style: tvg.Style, line_width: f32, length: usize) Error!void {
             const total_count = try validateLength(length);
             const reduced_count: ReducedCount = if (total_count < std.math.maxInt(u6))
-                @enumFromInt(@as(u6, @truncate(total_count)))
+                @fromBackingInt(@intCast(@as(u6, @truncate(total_count))))
             else
                 return error.OutOfRange;
 
@@ -255,12 +255,12 @@ pub fn Builder(comptime Writer: type) type {
         }
 
         fn writeCommandAndStyleType(self: *Self, cmd: tvg.Command, style_type: tvg.StyleType) Error!void {
-            try self.writer.writeByte((@as(u8, @intFromEnum(style_type)) << 6) | @intFromEnum(cmd));
+            try self.writer.writeByte((@as(u8, @backingInt(style_type)) << 6) | @backingInt(cmd));
         }
 
         /// Encodes a 6 bit count as well as a 2 bit style type.
         fn writeStyleTypeAndCount(self: *Self, style: tvg.StyleType, mapped_count: ReducedCount) !void {
-            const data = (@as(u8, @intFromEnum(style)) << 6) | @intFromEnum(mapped_count);
+            const data = (@as(u8, @backingInt(style)) << 6) | @backingInt(mapped_count);
             try self.writer.writeByte(data);
         }
 
@@ -285,7 +285,7 @@ pub fn Builder(comptime Writer: type) type {
             for (path) |item| {
                 try self.writePoint(item.start);
                 for (item.commands) |node| {
-                    const kind: u8 = @intFromEnum(std.meta.activeTag(node));
+                    const kind: u8 = @backingInt(std.meta.activeTag(node));
 
                     const line_width = switch (node) {
                         .line => |data| data.line_width,

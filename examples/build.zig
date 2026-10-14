@@ -60,6 +60,6 @@ pub fn build(b: *std.Build) void {
     const dump_exe = b.addExecutable(.{ .name = "svg2tvg-dump", .root_module = dump_mod });
     b.installArtifact(dump_exe);
     const run_dump = b.addRunArtifact(dump_exe);
-    if (b.args) |a| run_dump.addArgs(a);
+    run_dump.addPassthruArgs();
     b.step("dump", "Dump TVG commands for an icon (zig build dump -- <name>)").dependOn(&run_dump.step);
 }

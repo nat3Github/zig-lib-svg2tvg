@@ -90,8 +90,8 @@ pub fn Stack(T: type) type {
 pub const utils = struct {
     pub fn has_field(T: type, comptime name: []const u8) bool {
         comptime {
-            for (@typeInfo(T).@"struct".fields) |field| {
-                if (std.mem.eql(u8, field.name, name)) return true;
+            for (@typeInfo(T).@"struct".field_names) |field_name| {
+                if (std.mem.eql(u8, field_name, name)) return true;
             }
             return false;
         }
@@ -138,18 +138,18 @@ pub const utils = struct {
         return null;
     }
     pub fn auto_parse_def(T: type, self: *T, Def: type, att: []const u8, val: []const u8) !void {
-        const decls = @typeInfo(Def).@"struct".decls;
-        if (comptime decls.len == 0) @compileLog(Def);
-        inline for (decls) |decl| {
-            if (comptime has_field(T, decl.name)) {
-                const declT = @TypeOf(@field(Def, decl.name));
+        const decl_names = @typeInfo(Def).@"struct".decl_names;
+        if (comptime decl_names.len == 0) @compileLog(Def);
+        inline for (decl_names) |decl_name| {
+            if (comptime has_field(T, decl_name)) {
+                const declT = @TypeOf(@field(Def, decl_name));
                 if (comptime declT == f32 or declT == ?f32) {
-                    const v = try parseFloat(decl.name, att, val);
-                    if (v) |a| @field(self, decl.name) = a;
+                    const v = try parseFloat(decl_name, att, val);
+                    if (v) |a| @field(self, decl_name) = a;
                 }
                 if (comptime declT == SvgColor or declT == ?SvgColor) {
-                    const v = try parseColor(decl.name, att, val);
-                    if (v) |a| @field(self, decl.name) = a;
+                    const v = try parseColor(decl_name, att, val);
+                    if (v) |a| @field(self, decl_name) = a;
                 }
             }
         }

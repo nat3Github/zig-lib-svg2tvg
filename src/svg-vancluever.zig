@@ -2075,7 +2075,7 @@ pub const Parser = struct {
     };
 
     /// Prints the error to the supplied writer.
-    pub fn fmtErr(self: *Parser, writer: anytype) !void {
+    pub fn fmtErr(self: *Parser, writer: *std.Io.Writer) !void {
         if (self.err) |e| {
             try fmt.format(
                 writer,
@@ -4330,10 +4330,9 @@ test "comsumeRParen" {
 
 /// For testing only.
 fn testError(p: *Parser, expected: [:0]const u8) !void {
-    var buf = [_:0]u8{0} ** 256;
-    var stream = io.fixedBufferStream(&buf);
-    const writer = stream.writer();
-    try p.fmtErr(writer);
+    var buf: [256:0]u8 = @splat(0);
+    var writer: std.Io.Writer = .fixed(&buf);
+    try p.fmtErr(&writer);
     try testing.expectEqualSentinel(
         u8,
         0,

@@ -136,9 +136,9 @@ pub fn Parser() type {
 
                     const scale_and_flags: ScaleAndFlags = @bitCast(try reader.takeByte());
 
-                    const scale: tvg.Scale = @enumFromInt(scale_and_flags.scale);
-                    const color_encoding: tvg.ColorEncoding = @enumFromInt(scale_and_flags.color_encoding);
-                    const range: tvg.Range = @enumFromInt(scale_and_flags.coordinate_range);
+                    const scale: tvg.Scale = @fromBackingInt(@intCast(scale_and_flags.scale));
+                    const color_encoding: tvg.ColorEncoding = @fromBackingInt(@intCast(scale_and_flags.color_encoding));
+                    const range: tvg.Range = @fromBackingInt(@intCast(scale_and_flags.coordinate_range));
 
                     const width: u32 = switch (range) {
                         .reduced => mapZeroToMax(try reader.takeInt(u8, .little)),
@@ -253,7 +253,7 @@ pub fn Parser() type {
                     @compileError("Invalid field");
             }
 
-            if (fields.len != std.meta.fields(T).len) {
+            if (fields.len != @typeInfo(T).@"struct".field_names.len) {
                 @compileError("Uninitialized type");
             }
         }
@@ -301,8 +301,8 @@ pub fn Parser() type {
             if (self.end_of_document)
                 return null;
             const command_byte = try self.reader.takeByte();
-            const primary_style_type: tvg.StyleType = @enumFromInt(@as(u2, @truncate(command_byte >> 6)));
-            const command: tvg.Command = @enumFromInt(@as(u6, @truncate(command_byte)));
+            const primary_style_type: tvg.StyleType = @fromBackingInt(@intCast(@as(u2, @truncate(command_byte >> 6))));
+            const command: tvg.Command = @fromBackingInt(@intCast(@as(u6, @truncate(command_byte))));
 
             return switch (command) {
                 .end_of_document => {
@@ -593,9 +593,9 @@ pub fn Parser() type {
 
         fn readUnit(self: *const Self) !f32 {
             const unit: tvg.Unit = switch (self.header.coordinate_range) {
-                .reduced => @enumFromInt(try self.reader.takeInt(i8, .little)),
-                .default => @enumFromInt(try self.reader.takeInt(i16, .little)),
-                .enhanced => @enumFromInt(try self.reader.takeInt(i32, .little)),
+                .reduced => @fromBackingInt(@intCast(try self.reader.takeInt(i8, .little))),
+                .default => @fromBackingInt(@intCast(try self.reader.takeInt(i16, .little))),
+                .enhanced => @fromBackingInt(@intCast(try self.reader.takeInt(i32, .little))),
             };
             return unit.toFloat(self.header.scale);
         }
@@ -622,16 +622,16 @@ const CountAndStyleTag = packed struct {
 
 fn convertStyleType(value: u2) !StyleType {
     return switch (value) {
-        @intFromEnum(StyleType.flat) => StyleType.flat,
-        @intFromEnum(StyleType.linear) => StyleType.linear,
-        @intFromEnum(StyleType.radial) => StyleType.radial,
+        @backingInt(StyleType.flat) => StyleType.flat,
+        @backingInt(StyleType.linear) => StyleType.linear,
+        @backingInt(StyleType.radial) => StyleType.radial,
         else => error.InvalidData,
     };
 }
 
 fn MapZeroToMax(comptime T: type) type {
     const info = @typeInfo(T).int;
-    return std.meta.Int(.unsigned, info.bits + 1);
+    return @Int(.unsigned, info.bits + 1);
 }
 fn mapZeroToMax(value: anytype) MapZeroToMax(@TypeOf(value)) {
     return if (value == 0)

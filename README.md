@@ -1,6 +1,6 @@
 # svg2tvg - convert svg to tvg and render tvg to image!
 
-- written in zig 0.16.0
+- written in zig 0.17.0 (last zig 0.16.0 version: commit 2c72af8)
 - dependency name: svg2tvg, module name: svg2tvg
 
 ## status / background

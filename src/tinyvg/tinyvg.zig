@@ -150,7 +150,7 @@ pub const Scale = enum(u4) {
     }
 
     pub fn getShiftBits(self: *const Self) u4 {
-        return @intFromEnum(self.*);
+        return @backingInt(self.*);
     }
 
     pub fn getScaleFactor(self: *const Self) u15 {
@@ -165,20 +165,20 @@ pub const Unit = enum(i32) {
     _,
 
     pub fn init(scale: Scale, value: f32) Self {
-        return @enumFromInt(@as(i32, @intFromFloat(value * @as(f32, @floatFromInt(scale.getScaleFactor())) + 0.5)));
+        return @fromBackingInt(@intCast(@as(i32, @intFromFloat(value * @as(f32, @floatFromInt(scale.getScaleFactor())) + 0.5))));
     }
 
     pub fn raw(self: *const Self) i32 {
-        return @intFromEnum(self.*);
+        return @backingInt(self.*);
     }
 
     pub fn toFloat(self: *const Self, scale: Scale) f32 {
-        return @as(f32, @floatFromInt(@intFromEnum(self.*))) / @as(f32, @floatFromInt(scale.getScaleFactor()));
+        return @as(f32, @floatFromInt(@backingInt(self.*))) / @as(f32, @floatFromInt(scale.getScaleFactor()));
     }
 
     pub fn toInt(self: *const Self, scale: Scale) i32 {
         const factor = scale.getScaleFactor();
-        return @divFloor(@intFromEnum(self.*) + (@divExact(factor, 2)), factor);
+        return @divFloor(@backingInt(self.*) + (@divExact(factor, 2)), factor);
     }
 
     pub fn toUnsignedInt(self: *const Self, scale: Scale) !u31 {
