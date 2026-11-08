@@ -229,7 +229,7 @@ pub fn Builder(comptime Writer: type) type {
         /// Writes the preamble for a `outline_fill_*` command
         fn writeOutlineFillHeader(self: *Self, command: tvg.Command, fill_style: tvg.Style, line_style: tvg.Style, line_width: f32, length: usize) Error!void {
             const total_count = try validateLength(length);
-            const reduced_count: ReducedCount = if (total_count < std.math.maxInt(u6))
+            const reduced_count: ReducedCount = if (total_count <= std.math.maxInt(u6))
                 @fromBackingInt(@intCast(@as(u6, @truncate(total_count))))
             else
                 return error.OutOfRange;
