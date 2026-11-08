@@ -50,7 +50,7 @@ pub fn Stack(T: type) type {
             alloc.free(self.data);
         }
         pub fn push(self: *@This(), t: T) !void {
-            if (self.posplus1 > self.data.len) return error.OutOfBounds;
+            if (self.posplus1 >= self.data.len) return error.OutOfBounds;
             self.data[self.posplus1] = t;
             self.posplus1 += 1;
         }
