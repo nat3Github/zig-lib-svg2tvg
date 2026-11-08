@@ -1076,7 +1076,7 @@ pub const Color = struct {
             parser.pos = parser.data.len;
             color = parsed;
         } else {
-            parser.setErr(.color_keyword, 0, parser.data.len - 1, 0);
+            parser.setErr(.color_keyword, 0, parser.data.len -| 1, 0);
         }
 
         return .{
