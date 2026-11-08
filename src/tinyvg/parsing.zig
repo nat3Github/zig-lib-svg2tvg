@@ -101,6 +101,8 @@ pub fn Parser() type {
         reader: *std.Io.Reader,
         allocator: std.mem.Allocator,
         temp_buffer: std.array_list.AlignedManaged(u8, .@"16"),
+        path_segments: std.ArrayList(Path.Segment) = .empty,
+        path_nodes: std.ArrayList(Path.Node) = .empty,
         end_of_document: bool = false,
 
         header: Header,
@@ -153,11 +155,10 @@ pub fn Parser() type {
 
                     const color_count = try self.readUInt();
 
-                    self.color_table = try allocator.alloc(tvg.Color, color_count);
-                    errdefer allocator.free(self.color_table);
-
-                    for (self.color_table) |*c| {
-                        c.* = switch (color_encoding) {
+                    var colors: std.ArrayList(tvg.Color) = .empty;
+                    errdefer colors.deinit(allocator);
+                    for (0..color_count) |_| {
+                        const color = switch (color_encoding) {
                             .u8888 => tvg.Color{
                                 .r = @as(f32, @floatFromInt(try reader.takeInt(u8, .little))) / 255.0,
                                 .g = @as(f32, @floatFromInt(try reader.takeInt(u8, .little))) / 255.0,
@@ -182,7 +183,9 @@ pub fn Parser() type {
                             },
                             .custom => return error.UnsupportedColorFormat,
                         };
+                        try colors.append(allocator, color);
                     }
+                    self.color_table = try colors.toOwnedSlice(allocator);
 
                     self.header = Header{
                         .version = version,
@@ -201,46 +204,22 @@ pub fn Parser() type {
 
         pub fn deinit(self: *Self) void {
             self.temp_buffer.deinit();
+            self.path_segments.deinit(self.allocator);
+            self.path_nodes.deinit(self.allocator);
             self.allocator.free(self.color_table);
             self.* = undefined;
         }
 
-        fn setTempStorage(self: *Self, comptime T: type, length: usize) ![]T {
-            // temp_buffer is aligned to 16, so we don't have to worry about
-            // alignment here
-            try self.temp_buffer.resize(@sizeOf(T) * length);
-
-            const items = std.mem.bytesAsSlice(T, self.temp_buffer.items[0..(@sizeOf(T) * length)]);
-            std.debug.assert(items.len == length);
+        /// Grows with every item read, so a count field from the input cannot force a large allocation.
+        fn readTempItems(self: *Self, comptime T: type, count: usize, comptime readItem: anytype) ![]T {
+            self.temp_buffer.clearRetainingCapacity();
+            for (0..count) |_| {
+                const item: T = try readItem(self);
+                try self.temp_buffer.appendSlice(std.mem.asBytes(&item));
+            }
+            const items = std.mem.bytesAsSlice(T, self.temp_buffer.items);
+            std.debug.assert(items.len == count);
             return items;
-        }
-
-        fn setDualTempStorageReturn(T1: type, T2: type) type {
-            return struct { first: []T1, second: []T2 };
-        }
-
-        fn setDualTempStorage(
-            self: *Self,
-            comptime T1: type,
-            length1: usize,
-            comptime T2: type,
-            length2: usize,
-        ) !setDualTempStorageReturn(T1, T2) {
-            // temp_buffer is aligned to 16, so we don't have to worry about
-            // alignment for T1
-            try self.temp_buffer.resize(@sizeOf(T1) * length1 + @sizeOf(T2) * length2 + (@alignOf(T2) - 1));
-
-            // T2 alignment could be larger than T1
-            const offset = std.mem.alignForward(usize, @sizeOf(T1) * length1, @alignOf(T2));
-
-            const result = setDualTempStorageReturn(T1, T2){
-                .first = std.mem.bytesAsSlice(T1, self.temp_buffer.items[0 .. @sizeOf(T1) * length1]),
-                .second = @as([]T2, @alignCast(std.mem.bytesAsSlice(T2, self.temp_buffer.items[offset..][0 .. @sizeOf(T2) * length2]))),
-            };
-
-            std.debug.assert(result.first.len == length1);
-            std.debug.assert(result.second.len == length2);
-            return result;
         }
 
         fn ValAndSize(comptime T: type) type {
@@ -312,26 +291,14 @@ pub fn Parser() type {
                 .fill_polygon => blk: {
                     var data = try self.readFillHeader(primary_style_type, DrawCommand.FillPolygon, "vertices");
 
-                    data.data.vertices = try self.setTempStorage(Point, data.count);
-                    for (data.data.vertices) |*pt| {
-                        pt.x = try self.readUnit();
-                        pt.y = try self.readUnit();
-                    }
+                    data.data.vertices = try self.readTempItems(Point, data.count, readPoint);
 
                     break :blk DrawCommand{ .fill_polygon = data.data };
                 },
                 .fill_rectangles => blk: {
                     var data = try self.readFillHeader(primary_style_type, DrawCommand.FillRectangles, "rectangles");
 
-                    data.data.rectangles = try self.setTempStorage(Rectangle, data.count);
-                    for (data.data.rectangles) |*rect| {
-                        rect.x = try self.readUnit();
-                        rect.y = try self.readUnit();
-                        rect.width = try self.readUnit();
-                        rect.height = try self.readUnit();
-                        if (rect.width <= 0 or rect.height <= 0)
-                            return error.InvalidData;
-                    }
+                    data.data.rectangles = try self.readTempItems(Rectangle, data.count, readRectangle);
 
                     break :blk DrawCommand{ .fill_rectangles = data.data };
                 },
@@ -345,35 +312,21 @@ pub fn Parser() type {
                 .draw_lines => blk: {
                     var data = try self.readLineHeader(primary_style_type, DrawCommand.DrawLines, "lines");
 
-                    data.data.lines = try self.setTempStorage(Line, data.count);
-                    for (data.data.lines) |*line| {
-                        line.start.x = try self.readUnit();
-                        line.start.y = try self.readUnit();
-                        line.end.x = try self.readUnit();
-                        line.end.y = try self.readUnit();
-                    }
+                    data.data.lines = try self.readTempItems(Line, data.count, readLine);
 
                     break :blk DrawCommand{ .draw_lines = data.data };
                 },
                 .draw_line_loop => blk: {
                     var data = try self.readLineHeader(primary_style_type, DrawCommand.DrawLineSegments, "vertices");
 
-                    data.data.vertices = try self.setTempStorage(Point, data.count);
-                    for (data.data.vertices) |*point| {
-                        point.x = try self.readUnit();
-                        point.y = try self.readUnit();
-                    }
+                    data.data.vertices = try self.readTempItems(Point, data.count, readPoint);
 
                     break :blk DrawCommand{ .draw_line_loop = data.data };
                 },
                 .draw_line_strip => blk: {
                     var data = try self.readLineHeader(primary_style_type, DrawCommand.DrawLineSegments, "vertices");
 
-                    data.data.vertices = try self.setTempStorage(Point, data.count);
-                    for (data.data.vertices) |*point| {
-                        point.x = try self.readUnit();
-                        point.y = try self.readUnit();
-                    }
+                    data.data.vertices = try self.readTempItems(Point, data.count, readPoint);
 
                     break :blk DrawCommand{ .draw_line_strip = data.data };
                 },
@@ -387,26 +340,14 @@ pub fn Parser() type {
                 .outline_fill_polygon => blk: {
                     var data = try self.readOutlineFillHeader(primary_style_type, DrawCommand.OutlineFillPolygon, "vertices");
 
-                    data.data.vertices = try self.setTempStorage(Point, data.count);
-                    for (data.data.vertices) |*pt| {
-                        pt.x = try self.readUnit();
-                        pt.y = try self.readUnit();
-                    }
+                    data.data.vertices = try self.readTempItems(Point, data.count, readPoint);
 
                     break :blk DrawCommand{ .outline_fill_polygon = data.data };
                 },
                 .outline_fill_rectangles => blk: {
                     var data = try self.readOutlineFillHeader(primary_style_type, DrawCommand.OutlineFillRectangles, "rectangles");
 
-                    data.data.rectangles = try self.setTempStorage(Rectangle, data.count);
-                    for (data.data.rectangles) |*rect| {
-                        rect.x = try self.readUnit();
-                        rect.y = try self.readUnit();
-                        rect.width = try self.readUnit();
-                        rect.height = try self.readUnit();
-                        if (rect.width <= 0 or rect.height <= 0)
-                            return error.InvalidData;
-                    }
+                    data.data.rectangles = try self.readTempItems(Rectangle, data.count, readRectangle);
 
                     break :blk DrawCommand{ .outline_fill_rectangles = data.data };
                 },
@@ -423,48 +364,48 @@ pub fn Parser() type {
             };
         }
 
-        fn readPath(self: *Self, path_length: usize) !Path {
-            var segment_lengths: [1024]usize = undefined;
-            std.debug.assert(path_length <= segment_lengths.len);
-
-            var total_node_count: usize = 0;
-
-            {
-                var i: usize = 0;
-                while (i < path_length) : (i += 1) {
-                    segment_lengths[i] = @as(usize, try self.readUInt()) + 1;
-                    total_node_count += segment_lengths[i];
+        fn readPath(self: *Self, segment_count: usize) !Path {
+            const segment_lengths = try self.readTempItems(usize, segment_count, readSegmentLength);
+            self.path_segments.clearRetainingCapacity();
+            self.path_nodes.clearRetainingCapacity();
+            for (segment_lengths) |segment_length| {
+                const start = try self.readPoint();
+                for (0..segment_length) |_| {
+                    try self.path_nodes.append(self.allocator, try self.readNode());
                 }
+                try self.path_segments.append(self.allocator, .{ .start = start, .commands = &.{} });
             }
 
-            const buffers = try self.setDualTempStorage(
-                Path.Segment,
-                path_length,
-                Path.Node,
-                total_node_count,
-            );
-
-            var segment_start: usize = 0;
-            for (buffers.first, 0..) |*segment, i| {
-                const segment_len = segment_lengths[i];
-
-                segment.start.x = try self.readUnit();
-                segment.start.y = try self.readUnit();
-
-                const commands = buffers.second[segment_start..][0..segment_len];
-                for (commands) |*node| {
-                    node.* = try self.readNode();
-                }
-                segment.commands = commands;
-
-                segment_start += segment_len;
+            var node_start: usize = 0;
+            for (self.path_segments.items, segment_lengths) |*segment, segment_length| {
+                segment.commands = self.path_nodes.items[node_start..][0..segment_length];
+                node_start += segment_length;
             }
-            std.debug.assert(buffers.first.len == path_length);
-            std.debug.assert(segment_start == total_node_count);
+            std.debug.assert(node_start == self.path_nodes.items.len);
+            return .{ .segments = self.path_segments.items };
+        }
 
-            return Path{
-                .segments = buffers.first,
+        fn readSegmentLength(self: *Self) !usize {
+            return @as(usize, try self.readUInt()) + 1;
+        }
+
+        fn readPoint(self: *Self) !Point {
+            return .{ .x = try self.readUnit(), .y = try self.readUnit() };
+        }
+
+        fn readRectangle(self: *Self) !Rectangle {
+            const rectangle: Rectangle = .{
+                .x = try self.readUnit(),
+                .y = try self.readUnit(),
+                .width = try self.readUnit(),
+                .height = try self.readUnit(),
             };
+            if (rectangle.width <= 0 or rectangle.height <= 0) return error.InvalidData;
+            return rectangle;
+        }
+
+        fn readLine(self: *Self) !Line {
+            return .{ .start = try self.readPoint(), .end = try self.readPoint() };
         }
 
         fn readNode(self: *Self) !Path.Node {
