@@ -353,7 +353,7 @@ pub fn Builder(comptime Writer: type) type {
         }
 
         fn writeUnit(self: *Self, value: f32) Error!void {
-            const val = self.scale.map(value).raw();
+            const val = (try self.scale.map(value)).raw();
             switch (self.range) {
                 .reduced => {
                     const reduced_val = std.math.cast(i8, val) orelse return error.OutOfRange;

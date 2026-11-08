@@ -145,7 +145,7 @@ pub const Scale = enum(u4) {
     @"1/16384" = 14,
     @"1/32768" = 15,
 
-    pub fn map(self: *const Self, value: f32) Unit {
+    pub fn map(self: *const Self, value: f32) error{OutOfRange}!Unit {
         return Unit.init(self.*, value);
     }
 
@@ -164,8 +164,10 @@ pub const Unit = enum(i32) {
 
     _,
 
-    pub fn init(scale: Scale, value: f32) Self {
-        return @fromBackingInt(@intCast(@as(i32, @intFromFloat(value * @as(f32, @floatFromInt(scale.getScaleFactor())) + 0.5))));
+    pub fn init(scale: Scale, value: f32) error{OutOfRange}!Self {
+        const scaled = @round(value * @as(f32, @floatFromInt(scale.getScaleFactor())));
+        if (!(scaled >= -0x1p31 and scaled < 0x1p31)) return error.OutOfRange;
+        return @fromBackingInt(@as(i32, @intFromFloat(scaled)));
     }
 
     pub fn raw(self: *const Self) i32 {

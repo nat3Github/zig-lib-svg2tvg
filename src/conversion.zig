@@ -193,10 +193,7 @@ pub const Svg = struct {
             .x = @floatCast(pp.x),
             .y = @floatCast(pp.y),
         };
-        const ret = self.viewBox.transform(self.width.?, self.height.?, p);
-        assert(math.isNormal(ret.x) or ret.x == 0);
-        assert(math.isNormal(ret.y) or ret.y == 0);
-        return ret;
+        return self.viewBox.transform(self.width.?, self.height.?, p);
     }
     // pub fn point_from(self: *const @This(), coord: svg_parsing.CoordinatePair) Point {
     //     const p = Point{
