@@ -398,10 +398,11 @@ pub fn renderCommand(
 
             const line_widths = width_store.items();
 
-            for (slices.items()) |vertices| {
+            for (slices.items(), slice_store.items()) |vertices, slice| {
+                const widths = line_widths[slice.offset..][0..slice.len];
                 for (vertices[1..], 0..) |end, i| {
                     const start = vertices[i]; // is actually [i-1], but we access the slice off-by-one!
-                    painter.drawLine(framebuffer, color_table, data.style, line_widths[i], line_widths[i + 1], .{
+                    painter.drawLine(framebuffer, color_table, data.style, widths[i], widths[i + 1], .{
                         .start = start,
                         .end = end,
                     });
@@ -454,10 +455,11 @@ pub fn renderCommand(
 
             const line_widths = width_store.items();
 
-            for (slices.items()) |vertices| {
+            for (slices.items(), slice_store.items()) |vertices, slice| {
+                const widths = line_widths[slice.offset..][0..slice.len];
                 for (vertices[1..], 0..) |end, i| {
                     const start = vertices[i]; // is actually [i-1], but we access the slice off-by-one!
-                    painter.drawLine(framebuffer, color_table, data.line_style, line_widths[i], line_widths[i + 1], .{
+                    painter.drawLine(framebuffer, color_table, data.line_style, widths[i], widths[i + 1], .{
                         .start = start,
                         .end = end,
                     });
@@ -664,6 +666,7 @@ pub fn renderEllipse(
     start_width: f32,
     end_width: f32,
 ) !void {
+    if (radius_x == 0) return error.RadiusXCantBeZero;
     if (radius_y == 0) return error.RadiusYCantBeZero;
 
     // std.debug.print("renderEllipse(({d:.3} {d:.3}), ({d:.3} {d:.3}), {d:.2}, {d:.2}, {d:.4}, large={}, left={})\n", .{
@@ -746,8 +749,7 @@ fn renderCircle(
     start_width: f32,
     end_width: f32,
 ) !void {
-    if (!(p1.x != p0.x and p1.y != p0.y)) return; // points are equal
-    assert(p1.x != p0.x and p1.y != p0.y);
+    if (p1.x == p0.x and p1.y == p0.y) return;
     assert(radius != 0);
     var r = radius;
 
@@ -1158,7 +1160,7 @@ fn lerp_sRGB(c0: Color, c1: Color, f_unchecked: f32) Color {
         .r = gamma2linear(lerp(linear2gamma(c0.r), linear2gamma(c1.r), f)),
         .g = gamma2linear(lerp(linear2gamma(c0.g), linear2gamma(c1.g), f)),
         .b = gamma2linear(lerp(linear2gamma(c0.b), linear2gamma(c1.b), f)),
-        .a = lerp(c0.a, c0.a, f),
+        .a = lerp(c0.a, c1.a, f),
     };
 }
 
