@@ -726,6 +726,8 @@ pub fn write_path(
 }
 
 pub fn parse_colors_and_svg(popts: *const @This(), gpa: Allocator, svg_bytes: []const u8) !struct { []const Color, Svg } {
+    // xml.Reader.Streaming.init asserts a reader buffer of at least 2 bytes.
+    if (svg_bytes.len < 2) return error.InvalidSvg;
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -810,6 +812,7 @@ pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]con
 
     var builder = tvg.builder.create(&writer.writer);
 
+    assert(svg_bytes.len >= 2);
     var in: std.Io.Reader = .fixed(svg_bytes);
     var readerImpl: xml.Reader.Streaming = .init(gpa, &in, .{});
     defer readerImpl.deinit();
