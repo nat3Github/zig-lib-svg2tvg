@@ -21,15 +21,18 @@ pub fn renderBuffer(
     anti_alias: ?AntiAliasing,
     data: []const u8,
 ) !Image {
-    var stream = std.io.fixedBufferStream(data);
+    var reader: std.Io.Reader = .fixed(data);
     return try renderStream(
         temporary_allocator,
         image_allocator,
         size_hint,
         anti_alias,
-        stream.reader(),
+        &reader,
     );
 }
+
+/// 32768 × 32768 pixels including anti-aliasing samples, a 16 GiB temporary framebuffer.
+pub const max_render_pixel_count = 1 << 30;
 
 /// Renders a TinyVG graphic and returns the rendered image.
 /// - `temporary_allocator` is used for temporary allocations.
@@ -52,10 +55,10 @@ pub fn renderStream(
         .size => |size| size,
         .width => |width| Size{
             .width = width,
-            .height = (width * parser.header.height) / parser.header.width,
+            .height = std.math.cast(u32, @as(u64, width) * parser.header.height / parser.header.width) orelse return error.ImageTooLarge,
         },
         .height => |height| Size{
-            .width = (height * parser.header.width) / parser.header.height,
+            .width = std.math.cast(u32, @as(u64, height) * parser.header.width / parser.header.height) orelse return error.ImageTooLarge,
             .height = height,
         },
         .bounded => |bounds| calcBoundedSize(bounds, parser.header.width, parser.header.height),
@@ -65,14 +68,16 @@ pub fn renderStream(
         @backingInt(factor)
     else
         1;
+    assert(super_scale >= 1);
 
     const render_size = Size{
-        .width = target_size.width * super_scale,
-        .height = target_size.height * super_scale,
+        .width = std.math.mul(u32, target_size.width, super_scale) catch return error.ImageTooLarge,
+        .height = std.math.mul(u32, target_size.height, super_scale) catch return error.ImageTooLarge,
     };
 
+    const render_pixel_count = std.math.mul(usize, render_size.width, render_size.height) catch return error.ImageTooLarge;
+    if (render_pixel_count > max_render_pixel_count) return error.ImageTooLarge;
     const target_pixel_count = @as(usize, target_size.width) * @as(usize, target_size.height);
-    const render_pixel_count = @as(usize, render_size.width) * @as(usize, render_size.height);
 
     const framebuffer = Framebuffer{
         .slice = try temporary_allocator.alloc(Color, render_pixel_count),
@@ -190,7 +195,7 @@ const Framebuffer = struct {
         if (src_color.a == 0) {
             return;
         }
-        if (src_color.a == 255) {
+        if (src_color.a == 1) {
             destination_pixel.* = src_color;
             return;
         }
@@ -807,7 +812,7 @@ fn applyMat(mat: [2][2]f32, p: Point) Point {
     };
 }
 
-fn pointFromInts(x: i16, y: i16) Point {
+fn pointFromInts(x: i32, y: i32) Point {
     return Point{ .x = @as(f32, @floatFromInt(x)) + 0.5, .y = @as(f32, @floatFromInt(y)) + 0.5 };
 }
 
@@ -911,18 +916,18 @@ pub const Painter = struct {
     pub fn fillPolygonList(self: Painter, framebuffer: anytype, color_table: []const Color, style: Style, points_lists: []const []const Point, rule: FillRule) void {
         std.debug.assert(points_lists.len > 0);
 
-        var min_x: i16 = std.math.maxInt(i16);
-        var min_y: i16 = std.math.maxInt(i16);
-        var max_x: i16 = std.math.minInt(i16);
-        var max_y: i16 = std.math.minInt(i16);
+        var min_x: i32 = std.math.maxInt(i32);
+        var min_y: i32 = std.math.maxInt(i32);
+        var max_x: i32 = std.math.minInt(i32);
+        var max_y: i32 = std.math.minInt(i32);
 
         for (points_lists) |points| {
             // std.debug.assert(points.len >= 3);
             for (points) |pt| {
-                min_x = @min(min_x, floatToIntClamped(i16, @floor(self.scale_x * pt.x)));
-                min_y = @min(min_y, floatToIntClamped(i16, @floor(self.scale_y * pt.y)));
-                max_x = @max(max_x, floatToIntClamped(i16, @ceil(self.scale_x * pt.x)));
-                max_y = @max(max_y, floatToIntClamped(i16, @ceil(self.scale_y * pt.y)));
+                min_x = @min(min_x, floatToIntClamped(i32, @floor(self.scale_x * pt.x)));
+                min_y = @min(min_y, floatToIntClamped(i32, @floor(self.scale_y * pt.y)));
+                max_x = @max(max_x, floatToIntClamped(i32, @ceil(self.scale_x * pt.x)));
+                max_y = @max(max_y, floatToIntClamped(i32, @ceil(self.scale_y * pt.y)));
             }
         }
 
@@ -930,12 +935,12 @@ pub const Painter = struct {
         min_x = @max(min_x, 0);
         min_y = @max(min_y, 0);
 
-        max_x = @min(max_x, @as(i16, @intCast(framebuffer.width - 1)));
-        max_y = @min(max_y, @as(i16, @intCast(framebuffer.height - 1)));
+        max_x = @min(max_x, (std.math.cast(i32, framebuffer.width) orelse std.math.maxInt(i32)) - 1);
+        max_y = @min(max_y, (std.math.cast(i32, framebuffer.height) orelse std.math.maxInt(i32)) - 1);
 
-        var y: i16 = min_y;
+        var y: i32 = min_y;
         while (y <= max_y) : (y += 1) {
-            var x: i16 = min_x;
+            var x: i32 = min_x;
             while (x <= max_x) : (x += 1) {
 
                 // compute "center" of the pixel
@@ -966,28 +971,21 @@ pub const Painter = struct {
                     .even_odd => (inside_count % 2) == 1,
                 };
                 if (set) {
-                    const col = self.sampleStlye(color_table, style, x, y);
-                    const colv: [4]u8 = .{
-                        @intFromFloat(std.math.clamp(col.r, 0, 1) * 255),
-                        @intFromFloat(std.math.clamp(col.g, 0, 1) * 255),
-                        @intFromFloat(std.math.clamp(col.b, 0, 1) * 255),
-                        @intFromFloat(std.math.clamp(col.a, 0, 1) * 255),
-                    };
-                    framebuffer.setPixel(x, y, colv);
+                    framebuffer.setPixel(x, y, self.sampleStlye(color_table, style, x, y));
                 }
             }
         }
     }
 
     fn fillRectangle(self: Painter, framebuffer: anytype, x: f32, y: f32, width: f32, height: f32, color_table: []const Color, style: Style) void {
-        const min_x: i16 = @max(0, floatToIntClamped(i16, @floor(self.scale_x * x)));
-        const min_y: i16 = @max(0, floatToIntClamped(i16, @floor(self.scale_y * y)));
-        const xlimit: i16 = @min(floatToIntClamped(i16, @ceil(self.scale_x * (x + width))), @as(i16, @intCast(framebuffer.width)));
-        const ylimit: i16 = @min(floatToIntClamped(i16, @ceil(self.scale_y * (y + height))), @as(i16, @intCast(framebuffer.height)));
+        const min_x: i32 = @max(0, floatToIntClamped(i32, @floor(self.scale_x * x)));
+        const min_y: i32 = @max(0, floatToIntClamped(i32, @floor(self.scale_y * y)));
+        const xlimit: i32 = @min(floatToIntClamped(i32, @ceil(self.scale_x * (x + width))), std.math.cast(i32, framebuffer.width) orelse std.math.maxInt(i32));
+        const ylimit: i32 = @min(floatToIntClamped(i32, @ceil(self.scale_y * (y + height))), std.math.cast(i32, framebuffer.height) orelse std.math.maxInt(i32));
 
-        var py: i16 = min_y;
+        var py: i32 = min_y;
         while (py < ylimit) : (py += 1) {
-            var px: i16 = min_x;
+            var px: i32 = min_x;
             while (px < xlimit) : (px += 1) {
                 framebuffer.setPixel(px, py, self.sampleStlye(color_table, style, px, py));
             }
@@ -1046,31 +1044,31 @@ pub const Painter = struct {
     /// }
     /// ```
     fn drawLine(self: Painter, framebuffer: anytype, color_table: []const Color, style: Style, width_start: f32, width_end: f32, line: tvg.Line) void {
-        var min_x: i16 = std.math.maxInt(i16);
-        var min_y: i16 = std.math.maxInt(i16);
-        var max_x: i16 = std.math.minInt(i16);
-        var max_y: i16 = std.math.minInt(i16);
+        var min_x: i32 = std.math.maxInt(i32);
+        var min_y: i32 = std.math.maxInt(i32);
+        var max_x: i32 = std.math.minInt(i32);
+        var max_y: i32 = std.math.minInt(i32);
 
         const max_width = @max(width_start, width_end);
 
         const points = [_]tvg.Point{ line.start, line.end };
         for (points) |pt| {
-            min_x = @min(min_x, floatToIntClamped(i16, @floor(self.scale_x * (pt.x - max_width))));
-            min_y = @min(min_y, floatToIntClamped(i16, @floor(self.scale_y * (pt.y - max_width))));
-            max_x = @max(max_x, floatToIntClamped(i16, @ceil(self.scale_x * (pt.x + max_width))));
-            max_y = @max(max_y, floatToIntClamped(i16, @ceil(self.scale_y * (pt.y + max_width))));
+            min_x = @min(min_x, floatToIntClamped(i32, @floor(self.scale_x * (pt.x - max_width))));
+            min_y = @min(min_y, floatToIntClamped(i32, @floor(self.scale_y * (pt.y - max_width))));
+            max_x = @max(max_x, floatToIntClamped(i32, @ceil(self.scale_x * (pt.x + max_width))));
+            max_y = @max(max_y, floatToIntClamped(i32, @ceil(self.scale_y * (pt.y + max_width))));
         }
 
         // limit to valid screen area
         min_x = @max(min_x, 0);
         min_y = @max(min_y, 0);
 
-        max_x = @min(max_x, @as(i16, @intCast(framebuffer.width - 1)));
-        max_y = @min(max_y, @as(i16, @intCast(framebuffer.height - 1)));
+        max_x = @min(max_x, (std.math.cast(i32, framebuffer.width) orelse std.math.maxInt(i32)) - 1);
+        max_y = @min(max_y, (std.math.cast(i32, framebuffer.height) orelse std.math.maxInt(i32)) - 1);
 
-        var y: i16 = min_y;
+        var y: i32 = min_y;
         while (y <= max_y) : (y += 1) {
-            var x: i16 = min_x;
+            var x: i32 = min_x;
             while (x <= max_x) : (x += 1) {
 
                 // compute "center" of the pixel
@@ -1098,7 +1096,7 @@ pub const Painter = struct {
         };
     }
 
-    pub fn sampleStlye(self: Painter, color_table: []const Color, style: Style, x: i16, y: i16) Color {
+    pub fn sampleStlye(self: Painter, color_table: []const Color, style: Style, x: i32, y: i32) Color {
         return switch (style) {
             .flat => |index| color_table[index],
             .linear => |grad| blk: {
@@ -1280,11 +1278,13 @@ fn floatToInt(comptime I: type, f: anytype) error{Overflow}!I {
 }
 
 fn floatToIntClamped(comptime I: type, f: anytype) I {
-    if (std.math.isNan(f))
+    comptime assert(@bitSizeOf(I) <= 32);
+    const value: f64 = f;
+    if (std.math.isNan(value))
         @panic("NaN passed to floatToIntClamped!");
-    if (f < std.math.minInt(I))
+    if (value < std.math.minInt(I))
         return std.math.minInt(I);
-    if (f > std.math.maxInt(I))
+    if (value > std.math.maxInt(I))
         return std.math.maxInt(I);
-    return @intFromFloat(f);
+    return @intFromFloat(value);
 }
