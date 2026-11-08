@@ -1149,7 +1149,7 @@ fn gamma2linear(v: f32) f32 {
 }
 
 fn linear2gamma(v: f32) f32 {
-    return std.math.pow(f32, v / 255.0, sRGB_gamma);
+    return std.math.pow(f32, std.math.clamp(v, 0, 1) / 255.0, sRGB_gamma);
 }
 
 fn lerp_sRGB(c0: Color, c1: Color, f_unchecked: f32) Color {
