@@ -138,7 +138,7 @@ pub fn Parser() type {
 
                     const scale: tvg.Scale = @fromBackingInt(@intCast(scale_and_flags.scale));
                     const color_encoding: tvg.ColorEncoding = @fromBackingInt(@intCast(scale_and_flags.color_encoding));
-                    const range: tvg.Range = @fromBackingInt(@intCast(scale_and_flags.coordinate_range));
+                    const range = std.enums.fromInt(tvg.Range, scale_and_flags.coordinate_range) orelse return error.InvalidData;
 
                     const width: u32 = switch (range) {
                         .reduced => mapZeroToMax(try reader.takeInt(u8, .little)),
@@ -301,7 +301,7 @@ pub fn Parser() type {
             if (self.end_of_document)
                 return null;
             const command_byte = try self.reader.takeByte();
-            const primary_style_type: tvg.StyleType = @fromBackingInt(@intCast(@as(u2, @truncate(command_byte >> 6))));
+            const primary_style_type = try convertStyleType(@truncate(command_byte >> 6));
             const command: tvg.Command = @fromBackingInt(@intCast(@as(u6, @truncate(command_byte))));
 
             return switch (command) {
