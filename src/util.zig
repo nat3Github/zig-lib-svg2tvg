@@ -97,15 +97,8 @@ pub const utils = struct {
         }
     }
     pub fn parseF32relaxed(val: []const u8) !f32 {
-        const l = len_or_last_first_char: {
-            for (val, 0..) |c, i| {
-                if (std.ascii.isAlphabetic(c)) {
-                    break :len_or_last_first_char i;
-                }
-            }
-            break :len_or_last_first_char val.len;
-        };
-        return try std.fmt.parseFloat(f32, val[0..l]);
+        const without_unit = std.mem.trimEnd(u8, val, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ%");
+        return try std.fmt.parseFloat(f32, without_unit);
     }
     pub fn parseFloat(property_name: []const u8, att: []const u8, val: []const u8) !?f32 {
         if (std.mem.eql(u8, property_name, att)) {
@@ -192,7 +185,7 @@ pub const NodeMaker = struct {
         const command_len = len - self.cmds_len;
         if (command_len == 0) return;
         const iseg = IndexSegment{
-            .start = self.m.first,
+            .start = self.m.vw.transform(self.m.first),
             .command_idx = self.cmds_len,
             .command_len = command_len,
         };
@@ -269,17 +262,23 @@ pub const NodeMaker = struct {
     }
 };
 pub const make_node = struct {
-    last_control: ?Point = null,
+    last_cubic_control: ?Point = null,
+    last_quadratic_control: ?Point = null,
     first: Point = Point{ .x = 0, .y = 0 },
     cur: Point = Point{ .x = 0, .y = 0 },
     vw: Svg,
-    fn set_last_control(self: *make_node, p: Point) void {
-        self.last_control = p;
+    fn set_last_cubic_control(self: *make_node, p: Point) void {
+        self.last_cubic_control = p;
+        self.last_quadratic_control = null;
     }
-    fn get_reflection(self: *make_node, current: Point) Point {
-        if (self.last_control == null) return current;
-        const reflected = reflect_point(self.last_control.?, current);
-        return reflected;
+    fn set_last_quadratic_control(self: *make_node, p: Point) void {
+        self.last_quadratic_control = p;
+        self.last_cubic_control = null;
+    }
+    /// S reflects only a C or S control point, T only a Q or T control point.
+    fn get_reflection(self: *make_node, last_control: ?Point) Point {
+        const control = last_control orelse return self.cur;
+        return reflect_point(control, self.cur);
     }
     fn reflect_point(prev_control: Point, current_pos: Point) Point {
         return Point{
@@ -288,7 +287,8 @@ pub const make_node = struct {
         };
     }
     fn reset_last_control(self: *make_node) void {
-        self.last_control = null;
+        self.last_cubic_control = null;
+        self.last_quadratic_control = null;
     }
     fn reset(self: *make_node) void {
         self.reset_last_control();
@@ -296,10 +296,7 @@ pub const make_node = struct {
     }
 
     pub fn init(vw: Svg) make_node {
-        return make_node{
-            .last_control = null,
-            .vw = vw,
-        };
+        return make_node{ .vw = vw };
     }
     fn add(x: f32, y: f32, rel: bool) f32 {
         assert(!math.isNan(x));
@@ -354,7 +351,7 @@ pub const make_node = struct {
         if (make_node_debug2) std.log.warn("make_node: quadratic_bezier_curve_to", .{});
         const compute_c = addPoints(self.cur, c, rel);
         self.cur = addPoints(self.cur, p, rel);
-        self.set_last_control(compute_c);
+        self.set_last_quadratic_control(compute_c);
         return Node{ .quadratic_bezier = NodeData(Node.QuadraticBezier){
             .data = Node.QuadraticBezier{
                 .c = self.vw.transform(compute_c),
@@ -368,7 +365,7 @@ pub const make_node = struct {
         const compute_c0 = addPoints(self.cur, c1, rel);
         const compute_c1 = addPoints(self.cur, c2, rel);
         self.cur = addPoints(self.cur, p, rel);
-        self.set_last_control(compute_c1);
+        self.set_last_cubic_control(compute_c1);
         return Node{ .bezier = NodeData(Node.Bezier){
             .data = Node.Bezier{
                 .c0 = self.vw.transform(compute_c0),
@@ -381,9 +378,9 @@ pub const make_node = struct {
 
     pub fn smooth_quadratic_bezier_curve_to(self: *make_node, lw: ?f32, p: Point, rel: bool) !Node {
         if (make_node_debug2) std.log.warn("make_node: smooth_quadratic_bezier_curve_to", .{});
-        const reflected = self.get_reflection(self.cur);
+        const reflected = self.get_reflection(self.last_quadratic_control);
         self.cur = addPoints(self.cur, p, rel);
-        self.set_last_control(reflected);
+        self.set_last_quadratic_control(reflected);
         return Node{ .quadratic_bezier = NodeData(Node.QuadraticBezier){
             .data = Node.QuadraticBezier{
                 .c = self.vw.transform(reflected),
@@ -394,10 +391,10 @@ pub const make_node = struct {
     }
     pub fn smooth_curve_to(self: *make_node, lw: ?f32, c2: Point, p: Point, rel: bool) !Node {
         if (make_node_debug2) std.log.warn("make_node: smooth_curve_to", .{});
-        const compute_c0 = self.get_reflection(self.cur);
+        const compute_c0 = self.get_reflection(self.last_cubic_control);
         const compute_c1 = addPoints(self.cur, c2, rel);
         self.cur = addPoints(self.cur, p, rel);
-        self.set_last_control(compute_c1);
+        self.set_last_cubic_control(compute_c1);
         return Node{ .bezier = NodeData(Node.Bezier){
             .data = Node.Bezier{
                 .c0 = self.vw.transform(compute_c0),
@@ -409,12 +406,13 @@ pub const make_node = struct {
     }
     pub fn elliptical_arc(self: *make_node, lw: ?f32, rx: f32, ry: f32, rotation: f32, large_arc: bool, sweep_ccw: bool, p: Point, rel: bool) Node {
         if (make_node_debug2) std.log.warn("make_node: elliptical_arc", .{});
+        if (rx == 0 or ry == 0) return self.line(lw, p, rel);
         self.cur = addPoints(self.cur, p, rel);
         self.reset_last_control();
         return Node{ .arc_ellipse = NodeData(Node.ArcEllipse){
             .data = Node.ArcEllipse{
-                .radius_x = rx,
-                .radius_y = ry,
+                .radius_x = @abs(rx) * self.vw.lengthScale(),
+                .radius_y = @abs(ry) * self.vw.lengthScale(),
                 .rotation = rotation,
                 .large_arc = large_arc,
                 .sweep = !sweep_ccw,
@@ -425,13 +423,14 @@ pub const make_node = struct {
     }
     pub fn circular_arc(self: *make_node, lw: ?f32, r: f32, large_arc: bool, sweep_ccw: bool, p: Point, rel: bool) Node {
         if (make_node_debug2) std.log.warn("make_node: circular_arc", .{});
+        if (r == 0) return self.line(lw, p, rel);
         self.cur = addPoints(self.cur, p, rel);
         self.reset_last_control();
         return Node{
             .arc_circle = NodeData(Node.ArcCircle){
                 .data = Node.ArcCircle{
                     .large_arc = large_arc,
-                    .radius = r,
+                    .radius = @abs(r) * self.vw.lengthScale(),
                     .sweep = !sweep_ccw,
                     .target = self.vw.transform(self.cur),
                 },

@@ -38,19 +38,24 @@ const ViewBox = struct {
     y: f32 = 0,
     w: ?f32 = null,
     h: ?f32 = null,
+    /// preserveAspectRatio="xMidYMid meet", the SVG default: one scale for both axes, centered.
+    fn scale(self: *const @This(), width: f32, height: f32) f32 {
+        assert(width != 0);
+        assert(height != 0);
+        assert(self.w.? != 0);
+        assert(self.h.? != 0);
+        return @min(width / self.w.?, height / self.h.?);
+    }
     fn transform(
         self: *const @This(),
         width: f32,
         height: f32,
         point: Point,
     ) Point {
-        assert(width != 0);
-        assert(height != 0);
-        assert(self.w.? != 0);
-        assert(self.h.? != 0);
+        const s = self.scale(width, height);
         return Point{
-            .x = (point.x - self.x) * (width / self.w.?),
-            .y = (point.y - self.y) * (height / self.h.?),
+            .x = (point.x - self.x) * s + (width - self.w.? * s) / 2,
+            .y = (point.y - self.y) * s + (height - self.h.? * s) / 2,
         };
     }
 };
@@ -198,6 +203,9 @@ pub const Svg = struct {
         };
         return self.viewBox.transform(self.width.?, self.height.?, p);
     }
+    pub fn lengthScale(self: *const @This()) f32 {
+        return self.viewBox.scale(self.width.?, self.height.?);
+    }
     // pub fn point_from(self: *const @This(), coord: svg_parsing.CoordinatePair) Point {
     //     const p = Point{
     //         .x = @floatCast(coord.coordinates[0].number.value),
@@ -223,8 +231,8 @@ const Rect = struct {
     height: ?f32 = null, //the height of the rectangle Required.
     x: f32 = 0, //the x-position for the top-left corner of the rectangle
     y: f32 = 0, //the y-position for the top-left corner of the rectangle
-    rx: f32 = 0, //The x radius of the corners of the rectangle (used to round the corners). Default is 0
-    ry: f32 = 0, //The y radius of the corners of the rectangle (used to round the corners). Default is 0
+    rx: ?f32 = null, //The x radius of the corners of the rectangle (used to round the corners). Default is ry
+    ry: ?f32 = null, //The y radius of the corners of the rectangle (used to round the corners). Default is rx
     // pathLength = "the total length for the rectangle's perimeter",
     fill: ?SvgColor = null,
     @"fill-opacity": ?f32 = null, // between 0 and 1
@@ -242,8 +250,8 @@ const Rect = struct {
             pub const height: ?f32 = undefined;
             pub const x: f32 = undefined;
             pub const y: f32 = undefined;
-            pub const rx: f32 = undefined;
-            pub const ry: f32 = undefined;
+            pub const rx: ?f32 = undefined;
+            pub const ry: ?f32 = undefined;
             pub const fill: ?SvgColor = undefined;
             pub const @"fill-opacity": ?f32 = undefined;
             pub const stroke: ?SvgColor = undefined;
@@ -254,33 +262,32 @@ const Rect = struct {
             try utils.auto_parse_def(@This(), self, Def, a, v);
         }
         if (self.width == null or self.height == null) return error.RectWithoutDimensions;
-        const yline_len = @max(0, self.height.? - self.ry * 2);
-        const xline_len = @max(0, self.width.? - self.rx * 2);
-        var p = Point{
-            .x = self.x + self.rx,
-            .y = self.y,
-        };
-        try maker.move(p, false);
-        p.x += xline_len;
-        try maker.line(p, false);
-        p.x += self.rx;
-        p.y += self.ry;
-        try maker.elliptical_arc(self.rx, self.ry, 0, false, true, p, false);
-        p.y += yline_len;
-        try maker.line(p, false);
-        p.x += -self.rx;
-        p.y += self.ry;
-        try maker.elliptical_arc(self.rx, self.ry, 0, false, true, p, false);
-        p.x += -xline_len;
-        try maker.line(p, false);
-        p.x += -self.rx;
-        p.y += -self.ry;
-        try maker.elliptical_arc(self.rx, self.ry, 0, false, true, p, false);
-        p.y += -yline_len;
-        try maker.line(p, false);
-        p.x += self.rx;
-        p.y += -self.ry;
-        try maker.elliptical_arc(self.rx, self.ry, 0, false, true, p, false);
+        const width = self.width.?;
+        const height = self.height.?;
+        if (!(width > 0 and height > 0)) return;
+        var rx = std.math.clamp(self.rx orelse self.ry orelse 0, 0, width / 2);
+        var ry = std.math.clamp(self.ry orelse self.rx orelse 0, 0, height / 2);
+        const rounded = rx > 0 and ry > 0;
+        if (!rounded) {
+            rx = 0;
+            ry = 0;
+        }
+        const left = self.x;
+        const top = self.y;
+        const right = self.x + width;
+        const bottom = self.y + height;
+        try maker.move(.{ .x = left + rx, .y = top }, false);
+        try maker.line(.{ .x = right - rx, .y = top }, false);
+        if (rounded) try maker.elliptical_arc(rx, ry, 0, false, true, .{ .x = right, .y = top + ry }, false);
+        try maker.line(.{ .x = right, .y = bottom - ry }, false);
+        if (rounded) try maker.elliptical_arc(rx, ry, 0, false, true, .{ .x = right - rx, .y = bottom }, false);
+        try maker.line(.{ .x = left + rx, .y = bottom }, false);
+        if (rounded) {
+            try maker.elliptical_arc(rx, ry, 0, false, true, .{ .x = left, .y = bottom - ry }, false);
+            try maker.line(.{ .x = left, .y = top + ry }, false);
+            try maker.elliptical_arc(rx, ry, 0, false, true, .{ .x = left + rx, .y = top }, false);
+        }
+        try maker.close();
         try maker.flush();
     }
 };
@@ -313,6 +320,7 @@ const Circle = struct {
             try utils.auto_parse_def(@This(), self, Def, a, v);
         }
         const r = self.r orelse return error.NoRadius;
+        if (!(r > 0)) return;
 
         try maker.move(.{ .x = self.cx - r, .y = self.cy }, false);
         try maker.circular_arc(r, true, false, .{ .x = self.cx + r, .y = self.cy }, false);
@@ -361,6 +369,7 @@ const Ellipse = struct {
         }
         const rrx = self.rx orelse return error.NoRadius;
         const rry = self.ry orelse return error.NoRadius;
+        if (!(rrx > 0 and rry > 0)) return;
 
         try maker.move(.{ .x = self.cx - rrx, .y = self.cy }, false);
         try maker.elliptical_arc(rrx, rry, 0, false, false, .{ .x = self.cx + rrx, .y = self.cy }, false);
@@ -688,7 +697,7 @@ pub fn write_path(
     pathlist: []Segment,
     stack: *const Stack(InheritableProperties),
 ) !void {
-    const stroke_width = stack.top().?.@"stroke-width" orelse self.default_stroke_width;
+    const stroke_width = (stack.top().?.@"stroke-width" orelse self.default_stroke_width) * self.svg.lengthScale();
     const fill = try InheritableProperties.resolve_color_property(stack, "fill");
     const stroke = try InheritableProperties.resolve_color_property(stack, "stroke");
     // for (stack.data[0..stack.posplus1]) |el| {
@@ -807,6 +816,7 @@ pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]con
     const colors, const svg = try parse_colors_and_svg(&popts, gpa, svg_bytes);
     defer gpa.free(colors);
     popts.color_table = colors;
+    popts.svg = svg;
     var writer: std.Io.Writer.Allocating = .init(gpa);
     defer writer.deinit();
 
@@ -908,6 +918,7 @@ pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]con
                         var element = Line{};
                         try element.parse(&maker, att_names, att_vals);
                         top_mut.override_from(element);
+                        top_mut.fill = .none;
                         if (try maker.segments()) |segs| {
                             try write_path(&popts, garbage_alloc, &builder, segs, &stack);
                         }
