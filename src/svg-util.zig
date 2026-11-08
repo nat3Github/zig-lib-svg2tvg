@@ -40,6 +40,13 @@ pub fn parse_path_data(allocator: std.mem.Allocator, d: []const u8) ![]Command {
             position += 1;
         } else {
             if (current_cmd == null) return error.InvalidPathData;
+            const arc_value_index = values.items.len % 7;
+            if (std.ascii.toLower(current_cmd.?) == 'a' and (arc_value_index == 3 or arc_value_index == 4)) {
+                if (c != '0' and c != '1') return error.InvalidPathData;
+                try values.append(@floatFromInt(c - '0'));
+                position += 1;
+                continue;
+            }
             var number_end = position;
             if (d[number_end] == '+' or d[number_end] == '-') number_end += 1;
             const integer_start = number_end;
