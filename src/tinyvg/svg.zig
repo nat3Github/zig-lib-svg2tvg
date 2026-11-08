@@ -10,10 +10,10 @@ const tvg = @import("tinyvg.zig");
 /// - `allocator` will be used for temporary allocations in both the TVG parser and the SVG renderer.
 /// - `tvg_buffer` provides a binary TinyVG file
 /// - `writer` will receive the UTF-8 encoded SVG text.
-pub fn renderBinary(allocator: std.mem.Allocator, tvg_buffer: []const u8, writer: anytype) !void {
-    var stream = std.io.fixedBufferStream(tvg_buffer);
+pub fn renderBinary(allocator: std.mem.Allocator, tvg_buffer: []const u8, writer: *std.Io.Writer) !void {
+    var reader: std.Io.Reader = .fixed(tvg_buffer);
 
-    var parser = try tvg.parse(allocator, stream.reader());
+    var parser = try tvg.parse(allocator, &reader);
     defer parser.deinit();
 
     return try renderStream(allocator, &parser, writer);
@@ -23,12 +23,12 @@ pub fn renderBinary(allocator: std.mem.Allocator, tvg_buffer: []const u8, writer
 /// - `allocator` is used for temporary allocations
 /// - `parser` is a pointer to a `tvg.parsing.Parser(Reader)`
 /// - `writer` will receive the UTF-8 encoded SVG text.
-pub fn renderStream(allocator: std.mem.Allocator, parser: anytype, writer: anytype) !void {
+pub fn renderStream(allocator: std.mem.Allocator, parser: anytype, writer: *std.Io.Writer) !void {
     var cache = SvgStyleCache{
+        .allocator = allocator,
         .color_table = parser.color_table,
-        .list = std.ArrayList(tvg.Style).init(allocator),
     };
-    defer cache.list.deinit();
+    defer cache.list.deinit(allocator);
 
     try writer.print(
         \\<svg xmlns="http://www.w3.org/2000/svg" width="{0d}" height="{1d}" viewBox="0 0 {0d} {1d}">
@@ -42,7 +42,7 @@ pub fn renderStream(allocator: std.mem.Allocator, parser: anytype, writer: anyty
             .fill_rectangles => |data| {
                 for (data.rectangles) |rect| {
                     try writer.print(
-                        \\<rect style="{}" x="{d}" y="{d}" width="{d}" height="{d}"/>
+                        \\<rect style="{f}" x="{d}" y="{d}" width="{d}" height="{d}"/>
                     ,
                         .{
                             svgStyle(&cache, data.style, null, null),
@@ -58,7 +58,7 @@ pub fn renderStream(allocator: std.mem.Allocator, parser: anytype, writer: anyty
             .outline_fill_rectangles => |data| {
                 for (data.rectangles) |rect| {
                     try writer.print(
-                        \\<rect style="{}" x="{d}" y="{d}" width="{d}" height="{d}"/>
+                        \\<rect style="{f}" x="{d}" y="{d}" width="{d}" height="{d}"/>
                     ,
                         .{
                             svgStyle(&cache, data.fill_style, data.line_style, data.line_width),
@@ -74,7 +74,7 @@ pub fn renderStream(allocator: std.mem.Allocator, parser: anytype, writer: anyty
             .draw_lines => |data| {
                 for (data.lines) |line| {
                     try writer.print(
-                        \\<line style="{}" x1="{d}" y1="{d}" x2="{d}" y2="{d}"/>
+                        \\<line style="{f}" x1="{d}" y1="{d}" x2="{d}" y2="{d}"/>
                     ,
                         .{
                             svgStyle(&cache, null, data.style, data.line_width),
@@ -89,7 +89,7 @@ pub fn renderStream(allocator: std.mem.Allocator, parser: anytype, writer: anyty
 
             .draw_line_loop => |data| {
                 try writer.print(
-                    \\<polygon style="{}" points="
+                    \\<polygon style="{f}" points="
                 , .{
                     svgStyle(&cache, null, data.style, data.line_width),
                 });
@@ -104,7 +104,7 @@ pub fn renderStream(allocator: std.mem.Allocator, parser: anytype, writer: anyty
 
             .draw_line_strip => |data| {
                 try writer.print(
-                    \\<polyline style="{}" points="
+                    \\<polyline style="{f}" points="
                 , .{
                     svgStyle(&cache, null, data.style, data.line_width),
                 });
@@ -119,7 +119,7 @@ pub fn renderStream(allocator: std.mem.Allocator, parser: anytype, writer: anyty
 
             .fill_polygon => |data| {
                 try writer.print(
-                    \\<polygon style="{}" points="
+                    \\<polygon style="{f}" points="
                 , .{
                     svgStyle(&cache, data.style, null, null),
                 });
@@ -134,7 +134,7 @@ pub fn renderStream(allocator: std.mem.Allocator, parser: anytype, writer: anyty
 
             .outline_fill_polygon => |data| {
                 try writer.print(
-                    \\<polygon style="{}" points="
+                    \\<polygon style="{f}" points="
                 , .{
                     svgStyle(&cache, data.fill_style, data.line_style, data.line_width),
                 });
@@ -151,7 +151,7 @@ pub fn renderStream(allocator: std.mem.Allocator, parser: anytype, writer: anyty
                 const style = svgStyle(&cache, null, data.style, data.line_width);
                 const path = SvgPath{ .path = data.path };
                 try writer.print(
-                    \\<path style="{}" d="{}"/>
+                    \\<path style="{f}" d="{f}"/>
                 , .{ style, path });
             },
 
@@ -159,7 +159,7 @@ pub fn renderStream(allocator: std.mem.Allocator, parser: anytype, writer: anyty
                 const style = svgStyle(&cache, data.style, null, null);
                 const path = SvgPath{ .path = data.path };
                 try writer.print(
-                    \\<path style="{}" d="{}"/>
+                    \\<path style="{f}" d="{f}"/>
                 , .{ style, path });
             },
 
@@ -168,10 +168,11 @@ pub fn renderStream(allocator: std.mem.Allocator, parser: anytype, writer: anyty
                 const path = SvgPath{ .path = data.path };
 
                 try writer.print(
-                    \\<path style="{}" d="{}"/>
+                    \\<path style="{f}" d="{f}"/>
                 , .{ style, path });
             },
         }
+        if (cache.out_of_memory) return error.OutOfMemory;
     }
 
     if (cache.list.items.len > 0) {
@@ -181,7 +182,7 @@ pub fn renderStream(allocator: std.mem.Allocator, parser: anytype, writer: anyty
             switch (style) {
                 .linear => |grad| {
                     try writer.print(
-                        \\<linearGradient id="grad{}" gradientUnits="userSpaceOnUse" x1="{d}" y1="{d}" x2="{d}" y2="{d}">
+                        \\<linearGradient id="grad{d}" gradientUnits="userSpaceOnUse" x1="{d}" y1="{d}" x2="{d}" y2="{d}">
                     , .{ i, grad.point_0.x, grad.point_0.y, grad.point_1.x, grad.point_1.y });
                     try writer.print(
                         \\<stop offset="0" style="stop-opacity:{d}; stop-color:
@@ -199,7 +200,7 @@ pub fn renderStream(allocator: std.mem.Allocator, parser: anytype, writer: anyty
                     const r = std.math.sqrt(dx * dx + dy * dy);
 
                     try writer.print(
-                        \\<radialGradient id="grad{}" gradientUnits="userSpaceOnUse" cx="{d}" cy="{d}" r="{d}">
+                        \\<radialGradient id="grad{d}" gradientUnits="userSpaceOnUse" cx="{d}" cy="{d}" r="{d}">
                     , .{ i, grad.point_0.x, grad.point_0.y, r });
                     try writer.print(
                         \\<stop offset="0" style="stop-opacity:{d}; stop-color:
@@ -226,13 +227,11 @@ const SvgStyle = struct {
     line_style: ?tvg.Style,
     line_width: ?f32,
 
-    pub fn format(self: SvgStyle, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = fmt;
-        _ = options;
+    pub fn format(self: SvgStyle, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         if (self.fill_style) |style| {
             switch (style) {
                 .flat => |ind| try self.cache.printColorForStyle(writer, "fill", ind),
-                .linear, .radial => try writer.print("fill:url(#grad{});", .{
+                .linear, .radial => try writer.print("fill:url(#grad{d});", .{
                     self.cache.insert(style),
                 }),
             }
@@ -244,7 +243,7 @@ const SvgStyle = struct {
             try writer.writeAll("stroke-linecap:round;");
             switch (style) {
                 .flat => |ind| try self.cache.printColorForStyle(writer, "stroke", ind),
-                .linear, .radial => try writer.print("stroke:url(#grad{});", .{
+                .linear, .radial => try writer.print("stroke:url(#grad{d});", .{
                     self.cache.insert(style),
                 }),
             }
@@ -261,9 +260,7 @@ const SvgStyle = struct {
 const SvgPath = struct {
     path: tvg.Path,
 
-    pub fn format(self: SvgPath, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-        _ = fmt;
-        _ = options;
+    pub fn format(self: SvgPath, writer: *std.Io.Writer) std.Io.Writer.Error!void {
 
         for (self.path.segments) |segment| {
             try writer.print("M{d},{d}", .{ segment.start.x, segment.start.y });
@@ -314,18 +311,23 @@ fn svgStyle(
 }
 
 const SvgStyleCache = struct {
+    allocator: std.mem.Allocator,
     color_table: []const tvg.Color,
-    list: std.ArrayList(tvg.Style),
+    list: std.ArrayList(tvg.Style) = .empty,
+    out_of_memory: bool = false,
 
+    /// Returns the gradient id. Out of memory is remembered and reported after the format call,
+    /// because format can only fail with error.WriteFailed.
     pub fn insert(self: *SvgStyleCache, style: tvg.Style) usize {
-        self.list.append(style) catch @panic("out of memory");
+        self.list.append(self.allocator, style) catch {
+            self.out_of_memory = true;
+            return 0;
+        };
         return self.list.items.len - 1;
     }
 
-    fn printColorForStyle(self: SvgStyleCache, writer: anytype, prefix: []const u8, i: usize) !void {
-        if (i >= self.color_table.len) {
-            try writer.print("{s}: #FFFF00;", .{prefix});
-        }
+    fn printColorForStyle(self: SvgStyleCache, writer: *std.Io.Writer, prefix: []const u8, i: usize) !void {
+        std.debug.assert(i < self.color_table.len);
         const color = self.color_table[i];
 
         const r: u8 = @intFromFloat(std.math.clamp(255.0 * color.r, 0.0, 255.0));
@@ -337,10 +339,8 @@ const SvgStyleCache = struct {
         }
     }
 
-    fn printColor3AndPrefix(self: SvgStyleCache, writer: anytype, prefix: []const u8, i: usize, postfix: []const u8) !void {
-        if (i >= self.color_table.len) {
-            try writer.print("{s}#FFFF00{s}", .{ prefix, postfix });
-        }
+    fn printColor3AndPrefix(self: SvgStyleCache, writer: *std.Io.Writer, prefix: []const u8, i: usize, postfix: []const u8) !void {
+        std.debug.assert(i < self.color_table.len);
         const color = self.color_table[i];
 
         const r: u8 = @intFromFloat(std.math.clamp(255.0 * color.r, 0.0, 255.0));
