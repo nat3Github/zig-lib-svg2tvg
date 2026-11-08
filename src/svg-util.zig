@@ -20,85 +20,57 @@ pub const Command = struct {
     values: []const f32,
 };
 
+/// Number grammar of SVG path data: "1e1.5" is 1e1 followed by .5, "1-2" is 1 followed by -2.
 pub fn parse_path_data(allocator: std.mem.Allocator, d: []const u8) ![]Command {
     var commands = std.array_list.Managed(Command).init(allocator);
-    var it = std.mem.tokenizeAny(u8, d, " ,\t\n\r");
-
-    var tokens = std.array_list.Managed([]const u8).init(allocator);
-    while (it.next()) |token| {
-        // std.log.warn("token: {s}", .{token});
-        var scientific: bool = false;
-        var start: usize = 0;
-        var dot: bool = false;
-        var i: usize = 0;
-        while (i < token.len) {
-            const c = token[i];
-            if (c == '.') {
-                if (dot) {
-                    if (start != i) {
-                        try tokens.append(token[start..i]);
-                        start = i;
-                    }
-                } else dot = true;
-            }
-            if (!scientific and c == '-' or c == '+') {
-                if (start != i) {
-                    try tokens.append(token[start..i]);
-                    dot = false;
-                    start = i;
-                }
-            }
-            if (c == 'e') {
-                scientific = true;
-            } else if (std.ascii.isAlphabetic(c)) {
-                if (start != i) {
-                    try tokens.append(token[start..i]);
-                }
-                try tokens.append(token[i .. i + 1]);
-                dot = false;
-                start = i + 1;
-            }
-            i = i + 1;
-        }
-        if (start != token.len)
-            try tokens.append(token[start..token.len]);
-    }
-    // for (tokens.items) |tk| std.log.warn("{s}", .{tk});
-
-    var current_cmd: ?u8 = null;
-    var is_relative: bool = false;
-
     var values = std.array_list.Managed(f32).init(allocator);
-    var grabbing = false;
-    for (tokens.items) |token| {
-        if (std.ascii.isAlphabetic(token[0])) {
-            if (!grabbing) {
-                current_cmd = token[0];
-                is_relative = std.ascii.isLower(current_cmd.?);
-                grabbing = true;
-            } else {
-                try commands.append(Command{
-                    .node_type = try map_command_to_node(current_cmd.?),
-                    .rel = is_relative,
-                    .values = try allocator.dupe(f32, values.items),
-                });
-                values = std.array_list.Managed(f32).init(allocator);
-                current_cmd = token[0];
-                is_relative = std.ascii.isLower(current_cmd.?);
-            }
-        } else if (current_cmd == null) {
-            return error.InvalidPathData;
+    var current_cmd: ?u8 = null;
+    var position: usize = 0;
+    while (position < d.len) {
+        const c = d[position];
+        if (std.ascii.isWhitespace(c) or c == ',') {
+            position += 1;
+        } else if (std.ascii.isAlphabetic(c)) {
+            if (current_cmd) |cmd| try commands.append(.{
+                .node_type = try map_command_to_node(cmd),
+                .rel = std.ascii.isLower(cmd),
+                .values = try values.toOwnedSlice(),
+            });
+            current_cmd = c;
+            position += 1;
         } else {
-            // std.log.warn("{s}", .{token});
-            const val = try std.fmt.parseFloat(f32, token);
-            std.debug.assert(std.math.isNormal(val) or val == 0);
-            try values.append(val);
+            if (current_cmd == null) return error.InvalidPathData;
+            var number_end = position;
+            if (d[number_end] == '+' or d[number_end] == '-') number_end += 1;
+            const integer_start = number_end;
+            while (number_end < d.len and std.ascii.isDigit(d[number_end])) number_end += 1;
+            var digit_count = number_end - integer_start;
+            if (number_end < d.len and d[number_end] == '.') {
+                number_end += 1;
+                const fraction_start = number_end;
+                while (number_end < d.len and std.ascii.isDigit(d[number_end])) number_end += 1;
+                digit_count += number_end - fraction_start;
+            }
+            if (digit_count == 0) return error.InvalidPathData;
+            if (number_end < d.len and (d[number_end] == 'e' or d[number_end] == 'E')) {
+                var exponent_end = number_end + 1;
+                if (exponent_end < d.len and (d[exponent_end] == '+' or d[exponent_end] == '-')) exponent_end += 1;
+                const exponent_digits_start = exponent_end;
+                while (exponent_end < d.len and std.ascii.isDigit(d[exponent_end])) exponent_end += 1;
+                if (exponent_end > exponent_digits_start) number_end = exponent_end;
+            }
+            std.debug.assert(number_end > position);
+            const value = try std.fmt.parseFloat(f32, d[position..number_end]);
+            if (!std.math.isFinite(value)) return error.InvalidPathData;
+            try values.append(value);
+            position = number_end;
         }
     }
-    try commands.append(Command{
-        .node_type = try map_command_to_node(current_cmd.?),
-        .rel = is_relative,
-        .values = try allocator.dupe(f32, values.items),
+    const last_cmd = current_cmd orelse return commands.items;
+    try commands.append(.{
+        .node_type = try map_command_to_node(last_cmd),
+        .rel = std.ascii.isLower(last_cmd),
+        .values = try values.toOwnedSlice(),
     });
     return commands.items;
 }
