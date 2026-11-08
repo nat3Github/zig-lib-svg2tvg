@@ -153,8 +153,8 @@ pub const Scale = enum(u4) {
         return @backingInt(self.*);
     }
 
-    pub fn getScaleFactor(self: *const Self) u15 {
-        return @as(u15, 1) << self.getShiftBits();
+    pub fn getScaleFactor(self: *const Self) u16 {
+        return @as(u16, 1) << self.getShiftBits();
     }
 };
 
