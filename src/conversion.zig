@@ -187,6 +187,9 @@ pub const Svg = struct {
             self.viewBox.h = self.height;
         }
         if (self.width == null or self.height == null) return error.NoWidthHeightDefined;
+        for ([_]?f32{ self.width, self.height, self.viewBox.w, self.viewBox.h }) |size| {
+            if (!(size.? > 0 and size.? < 0x1p32)) return error.InvalidSize;
+        }
     }
     pub fn transform(self: *const @This(), pp: Point) Point {
         const p = Point{
@@ -812,8 +815,8 @@ pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]con
     defer readerImpl.deinit();
     var reader = &readerImpl.interface;
 
-    const sw: u32 = @intFromFloat(@round(svg.width.?));
-    const sh: u32 = @intFromFloat(@round(svg.height.?));
+    const sw: u32 = @intFromFloat(@max(1, @round(svg.width.?)));
+    const sh: u32 = @intFromFloat(@max(1, @round(svg.height.?)));
     try builder.writeHeader(sw, sh, Scale.@"1/4096", .u8888, Range.enhanced);
 
     try builder.writeColorTable(colors);
