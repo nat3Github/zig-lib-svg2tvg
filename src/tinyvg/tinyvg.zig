@@ -38,7 +38,7 @@ pub fn parse(allocator: std.mem.Allocator, reader: *std.Io.Reader) !parsing.Pars
 pub fn renderStream(
     /// Allocator for temporary allocations
     allocator: std.mem.Allocator,
-    /// A struct that exports a single function `setPixel(x: isize, y: isize, color: [4]u8) void` as well as two fields width and height
+    /// A struct that exports a single function `setPixel(x: isize, y: isize, color: tvg.Color) void` as well as two fields width and height
     framebuffer: anytype,
     /// The icon data
     reader: anytype,
@@ -60,7 +60,7 @@ pub fn renderStream(
 pub fn render(
     /// Allocator for temporary allocations
     allocator: std.mem.Allocator,
-    /// A struct that exports a single function `setPixel(x: isize, y: isize, color: [4]u8) void` as well as two fields width and height
+    /// A struct that exports a single function `setPixel(x: isize, y: isize, color: tvg.Color) void` as well as two fields width and height
     framebuffer: anytype,
     /// The icon data
     icon: []const u8,

@@ -305,12 +305,12 @@ pub const IndexSlice = struct { offset: usize, len: usize };
 const temp_buffer_size = 256;
 
 /// Renders a single TinyVG command. Performs no aliasing, super sampling or blending.
-/// - `framebuffer` implements the backing storage for rendering, must provide function `setPixel(x:usize,y:usize,TvgColor)` and fields `width` and `height`.
+/// - `framebuffer` implements the backing storage for rendering, must provide function `setPixel(x: isize, y: isize, color: tvg.Color)` and fields `width` and `height`.
 /// - `header` is the TinyVG header
 /// - `color_table` is the color table that is used for rendering.
 /// - `cmd` is the draw command that should be rendered.
 pub fn renderCommand(
-    /// A struct that exports a single function `setPixel(x: isize, y: isize, color: [4]u8) void` as well as two fields width and height
+    /// A struct that exports a single function `setPixel(x: isize, y: isize, color: tvg.Color) void` as well as two fields width and height
     framebuffer: anytype,
     /// The parsed header of a TVG
     header: parsing.Header,
