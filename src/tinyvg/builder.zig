@@ -90,7 +90,7 @@ pub fn Builder(comptime Writer: type) type {
 
                     const value: u16 =
                         (@as(u16, ((rgb8[0] >> 3) & 0x1F)) << 0) |
-                        (@as(u16, ((rgb8[1] >> 2) & 0x2F)) << 5) |
+                        (@as(u16, ((rgb8[1] >> 2) & 0x3F)) << 5) |
                         (@as(u16, ((rgb8[2] >> 3) & 0x1F)) << 11);
 
                     try self.writer.writeInt(u16, value, .little);
@@ -395,7 +395,7 @@ fn mapSizeToType(comptime Dest: type, value: usize) error{OutOfRange}!Dest {
     if (value == 0 or value > std.math.maxInt(Dest) + 1) {
         return error.OutOfRange;
     }
-    if (value == std.math.maxInt(Dest))
+    if (value == std.math.maxInt(Dest) + 1)
         return 0;
     return @intCast(value);
 }
