@@ -487,7 +487,7 @@ pub fn Parser() type {
 
         fn readStyle(self: *Self, kind: StyleType) !Style {
             return switch (kind) {
-                .flat => Style{ .flat = try self.readUInt() },
+                .flat => Style{ .flat = try self.readColorIndex() },
                 .linear => Style{ .linear = try self.readGradient() },
                 .radial => Style{ .radial = try self.readGradient() },
             };
@@ -503,15 +503,15 @@ pub fn Parser() type {
                 .x = try self.readUnit(),
                 .y = try self.readUnit(),
             };
-            grad.color_0 = try self.readUInt();
-            grad.color_1 = try self.readUInt();
-
-            if (grad.color_0 >= self.color_table.len)
-                return error.InvalidData;
-            if (grad.color_1 >= self.color_table.len)
-                return error.InvalidData;
-
+            grad.color_0 = try self.readColorIndex();
+            grad.color_1 = try self.readColorIndex();
             return grad;
+        }
+
+        fn readColorIndex(self: *Self) error{InvalidData}!u32 {
+            const index = try self.readUInt();
+            if (index >= self.color_table.len) return error.InvalidData;
+            return index;
         }
 
         fn readUInt(self: *Self) error{InvalidData}!u32 {
