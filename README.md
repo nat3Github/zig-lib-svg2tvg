@@ -6,11 +6,12 @@
 ## status / background
 
 - the main goal is to convert and render icons
-- there is a z2d based renderer, that has options to overwrite color and stroke width, but its source is not vendored anymore in src/ to simplify dependencies, instead it lives in the examples/ folder, feel free to copy it from there if you need raster based rendering!
+- there is a z2d based renderer, that has options to overwrite color and stroke width, but its source is not vendored in src/ anymore, it lives in the examples/, feel free to copy it from there for raster based rendering!
 - if you need triangle based rendering using svg2tvg, its implemented and vendored inside dvui's icon rendering pipeline
 - only a small subset of svg is supported
 - related project: [zig-lib-icons](https://github.com/nat3Github/zig-lib-icons/tree/main)
 - as of now used in the [dvui](https://github.com/david-vanderson/dvui) project as part of rendering svg/tvg icons
+- ongoing work in afl++ fuzz tests (out of tree) to find and fix error conditions
 
 # api
 
