@@ -452,6 +452,9 @@ const Tessellator = struct {
         removeEdgeBelow(edge);
         edge.top = vertex;
         try tessellator.insertBelow(edge, vertex);
+        // The new top turns the edge, so its place among the edges above its bottom can change.
+        removeEdgeAbove(edge);
+        try tessellator.insertAbove(edge, edge.bottom.?);
         try tessellator.rewindIfNecessary(edge, sweep);
         try tessellator.mergeCollinearEdges(edge, sweep);
     }
@@ -461,6 +464,9 @@ const Tessellator = struct {
         removeEdgeAbove(edge);
         edge.bottom = vertex;
         try tessellator.insertAbove(edge, vertex);
+        // The new bottom turns the edge, so its place among the edges below its top can change.
+        removeEdgeBelow(edge);
+        try tessellator.insertBelow(edge, edge.top.?);
         try tessellator.rewindIfNecessary(edge, sweep);
         try tessellator.mergeCollinearEdges(edge, sweep);
     }
@@ -595,7 +601,13 @@ const Tessellator = struct {
         const vertex = for ([_]*Vertex{ left.top.?, left.bottom.?, right.top.?, right.bottom.? }) |end| {
             if (pointsEqual(crossing, end.point)) break end;
         } else try tessellator.makeSortedVertex(crossing, mesh, top);
-        try tessellator.rewind(sweep, top orelse vertex);
+        // A split off the chord turns it, so vertices the sweep already passed can now touch it.
+        var rewind_target = top orelse vertex;
+        for ([_]*Edge{ left, right }) |edge| {
+            const edge_top = edge.top.?;
+            if (edge.side(vertex.point) != 0 and sweepLessThan(edge_top.point, rewind_target.point)) rewind_target = edge_top;
+        }
+        try tessellator.rewind(sweep, rewind_target);
         _ = try tessellator.splitEdge(left, vertex, sweep);
         _ = try tessellator.splitEdge(right, vertex, sweep);
         return true;
