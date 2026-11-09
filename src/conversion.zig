@@ -498,7 +498,7 @@ const Polygon = struct {
                 self.points = res.items;
             }
         }
-        if (self.points.len < 3) return error.PolygonHasLessThan3Points;
+        if (self.points.len == 0) return;
         for (self.points, 0..) |p, i| {
             if (i == 0) {
                 try maker.move(.{ .x = p.x, .y = p.y }, false);
