@@ -4,6 +4,7 @@ const tinyvg2 = @import("tinyvg/tinyvg.zig");
 pub const tvg = tinyvg2;
 pub const tvg_parsing = @import("tinyvg/parsing.zig");
 pub const conversion = @import("conversion.zig");
+pub const arrangement = @import("arrangement.zig");
 pub const tvg_from_svg = conversion.tvg_from_svg;
 
 pub const Color = tvg.Color;

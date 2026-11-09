@@ -11,6 +11,7 @@ const Stack = ut.Stack;
 const NodeMaker = ut.NodeMaker;
 const ColMap = ut.ColMap;
 const svg_ut = @import("svg-util.zig");
+const arrangement = @import("arrangement.zig");
 const SvgColor = svg_ut.SvgColor;
 const SvgColorAttribute = svg_ut.SvgColorAttribute;
 
@@ -60,6 +61,9 @@ const ViewBox = struct {
     }
 };
 
+/// Keywords as written in SVG.
+const FillRule = enum { nonzero, evenodd };
+
 const InheritableProperties = struct {
     fill: ?SvgColor = .{ .col = .{
         .r = 0,
@@ -70,6 +74,7 @@ const InheritableProperties = struct {
     stroke: ?SvgColor = null, // Stroke (outline) color
     color: ?SvgColor = null, // Used as base color (currentColor, filters, etc.)
     @"fill-opacity": ?f32 = null, // Opacity of the fill
+    @"fill-rule": ?FillRule = null,
     @"stroke-opacity": ?f32 = null, // Stroke opacity
     @"stroke-width": ?f32 = null, // Stroke thickness
     // @"stroke-dasharray": ? = null, // Dash pattern of the stroke
@@ -155,6 +160,7 @@ pub const Svg = struct {
     // preserveAspectRatio="How the svg fragment is deformed if it is displayed with a different aspect ratio". Can be none| xMinYMin| xMidYMin| xMaxYMin| xMinYMid| xMidYMid| xMaxYMid| xMinYMax| xMidYMax| xMaxYMax. Default is xMidYMid
     fill: ?SvgColor = null,
     @"fill-opacity": ?f32 = null, // between 0 and 1
+    @"fill-rule": ?FillRule = null,
     stroke: ?SvgColor = null,
     @"stroke-width": ?f32 = null,
     @"stroke-opacity": ?f32 = null, // between 0 and 1
@@ -169,6 +175,7 @@ pub const Svg = struct {
             pub const height: ?f32 = undefined;
             pub const fill: ?SvgColor = undefined;
             pub const @"fill-opacity": ?f32 = undefined;
+            pub const @"fill-rule": ?FillRule = undefined;
             pub const stroke: ?SvgColor = undefined;
             pub const @"stroke-width": ?f32 = undefined;
             pub const @"stroke-opacity": ?f32 = undefined;
@@ -425,6 +432,7 @@ const PolyLine = struct {
     points: []const Point = &.{}, //The list of points of the polygon. Each point must contain an x coordinate and a y coordinate. Required.
     fill: ?SvgColor = null,
     @"fill-opacity": ?f32 = null, // between 0 and 1
+    @"fill-rule": ?FillRule = null,
     stroke: ?SvgColor = null,
     @"stroke-width": ?f32 = null,
     @"stroke-opacity": ?f32 = null, // between 0 and 1
@@ -439,6 +447,7 @@ const PolyLine = struct {
         const Def = struct {
             pub const fill: ?SvgColor = undefined;
             pub const @"fill-opacity": ?f32 = undefined;
+            pub const @"fill-rule": ?FillRule = undefined;
             pub const stroke: ?SvgColor = undefined;
             pub const @"stroke-width": ?f32 = undefined;
             pub const @"stroke-opacity": ?f32 = undefined;
@@ -464,6 +473,7 @@ const Polygon = struct {
     points: []const Point = &.{}, //The list of points of the polygon. Each point must contain an x coordinate and a y coordinate. Required.
     fill: ?SvgColor = null,
     @"fill-opacity": ?f32 = null, // between 0 and 1
+    @"fill-rule": ?FillRule = null,
     stroke: ?SvgColor = null,
     @"stroke-width": ?f32 = null,
     @"stroke-opacity": ?f32 = null, // between 0 and 1
@@ -477,6 +487,7 @@ const Polygon = struct {
         const Def = struct {
             pub const fill: ?SvgColor = undefined;
             pub const @"fill-opacity": ?f32 = undefined;
+            pub const @"fill-rule": ?FillRule = undefined;
             pub const stroke: ?SvgColor = undefined;
             pub const @"stroke-width": ?f32 = undefined;
             pub const @"stroke-opacity": ?f32 = undefined;
@@ -504,6 +515,7 @@ const SvgPath = struct {
     d: ParsePath = ParsePath{}, //The list of points of the polygon. Each point must contain an x-  and a y-coordinate. Required.
     fill: ?SvgColor = null,
     @"fill-opacity": ?f32 = null, // between 0 and 1
+    @"fill-rule": ?FillRule = null,
     stroke: ?SvgColor = null,
     @"stroke-width": ?f32 = null,
     @"stroke-opacity": ?f32 = null, // between 0 and 1
@@ -520,6 +532,7 @@ const SvgPath = struct {
         const Def = struct {
             pub const fill: ?SvgColor = undefined;
             pub const @"fill-opacity": ?f32 = undefined;
+            pub const @"fill-rule": ?FillRule = undefined;
             pub const stroke: ?SvgColor = undefined;
             pub const @"stroke-width": ?f32 = undefined;
             pub const @"stroke-opacity": ?f32 = undefined;
@@ -649,6 +662,7 @@ const SvgPath = struct {
 const G = struct {
     fill: ?SvgColor = null,
     @"fill-opacity": ?f32 = null, // between 0 and 1
+    @"fill-rule": ?FillRule = null,
     stroke: ?SvgColor = null,
     @"stroke-width": ?f32 = null,
     @"stroke-opacity": ?f32 = null, // between 0 and 1
@@ -660,6 +674,7 @@ const G = struct {
         const Def = struct {
             pub const fill: ?SvgColor = undefined;
             pub const @"fill-opacity": ?f32 = undefined;
+            pub const @"fill-rule": ?FillRule = undefined;
             pub const stroke: ?SvgColor = undefined;
             pub const @"stroke-width": ?f32 = undefined;
             pub const @"stroke-opacity": ?f32 = undefined;
@@ -707,8 +722,12 @@ pub fn write_path(
         const col_idx = try self.get_col(col);
         // std.log.warn("fill: {}", .{col});
         // std.log.warn("coll index: {}", .{col_idx});
-        if (debug_write_path) std.log.warn("writeFillPath: {any}", .{pathlist});
-        try builder.writeFillPath(.{ .flat = col_idx }, pathlist);
+        const fill_segments = switch (stack.top().?.@"fill-rule" orelse .nonzero) {
+            .evenodd => pathlist,
+            .nonzero => try self.even_odd_segments_for_nonzero(arena_alloc, pathlist),
+        };
+        if (debug_write_path) std.log.warn("writeFillPath: {any}", .{fill_segments});
+        if (fill_segments.len > 0) try builder.writeFillPath(.{ .flat = col_idx }, fill_segments);
     }
     if (stroke) |col| {
         for (pathlist) |*seg| {
@@ -732,6 +751,53 @@ pub fn write_path(
         const col_idx = try self.get_col(col);
         try builder.writeDrawPath(.{ .flat = col_idx }, stroke_width, pathlist);
     }
+}
+
+const tvg_scale: Scale = .@"1/4096";
+
+/// TinyVG fills every path even-odd. Returns segments whose even-odd fill is the nonzero fill of
+/// `pathlist`: the path itself if both rules agree, without the contours between two filled
+/// regions if no edges touch, otherwise the flattened boundary of the filled regions.
+fn even_odd_segments_for_nonzero(self: *const @This(), arena_alloc: Allocator, pathlist: []Segment) ![]const Segment {
+    // A fixed fraction of the image looks alike at every display size. 1/4096 gives a circle
+    // spanning the image about 100 segments, as many as the reference renderer draws.
+    const tolerance = @max(self.svg.width.?, self.svg.height.?) / 4096;
+    const limits: arrangement.Limits = .{};
+    const contours = try arrangement.flattenSegments(arena_alloc, pathlist, tvg_scale, tolerance, limits.max_edges);
+    assert(contours.count() == pathlist.len);
+    const regions = try arrangement.Arrangement.init(arena_alloc, contours, limits);
+    if (regions.fillRulesAgree()) return pathlist;
+
+    if (regions.input_edges_unchanged) {
+        const ContourRole = enum { empty, boundary, inner };
+        const roles = try arena_alloc.alloc(ContourRole, pathlist.len);
+        @memset(roles, .empty);
+        const consistent = for (regions.edges) |edge| {
+            const role: ContourRole = if (edge.separates(.nonzero)) .boundary else .inner;
+            if (roles[edge.contour] == .empty) roles[edge.contour] = role;
+            if (roles[edge.contour] != role) break false;
+        } else true;
+        if (consistent) {
+            var kept: std.ArrayList(Segment) = .empty;
+            for (pathlist, roles) |segment, role| {
+                if (role == .boundary) try kept.append(arena_alloc, segment);
+            }
+            return kept.items;
+        }
+    }
+
+    const boundary = try regions.boundary(arena_alloc, .nonzero);
+    const grid_per_pixel: f32 = @floatFromInt(tvg_scale.getScaleFactor());
+    const segments = try arena_alloc.alloc(Segment, boundary.count());
+    for (segments, 0..) |*segment, contour_index| {
+        const points = boundary.get(contour_index);
+        const nodes = try arena_alloc.alloc(Node, points.len - 1);
+        for (nodes, points[1..]) |*node, point| {
+            node.* = .{ .line = .init(null, .{ .x = @as(f32, @floatFromInt(point[0])) / grid_per_pixel, .y = @as(f32, @floatFromInt(point[1])) / grid_per_pixel }) };
+        }
+        segment.* = .{ .start = .{ .x = @as(f32, @floatFromInt(points[0][0])) / grid_per_pixel, .y = @as(f32, @floatFromInt(points[0][1])) / grid_per_pixel }, .commands = nodes };
+    }
+    return segments;
 }
 
 pub fn parse_colors_and_svg(popts: *const @This(), gpa: Allocator, svg_bytes: []const u8) !struct { []const Color, Svg } {
@@ -830,7 +896,7 @@ pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]con
 
     const sw: u32 = @intFromFloat(@max(1, @round(svg.width.?)));
     const sh: u32 = @intFromFloat(@max(1, @round(svg.height.?)));
-    try builder.writeHeader(sw, sh, Scale.@"1/4096", .u8888, Range.enhanced);
+    try builder.writeHeader(sw, sh, tvg_scale, .u8888, Range.enhanced);
 
     try builder.writeColorTable(colors);
 

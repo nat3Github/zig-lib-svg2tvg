@@ -744,7 +744,7 @@ pub fn renderEllipse(
     }
 }
 
-fn renderCircle(
+pub fn renderCircle(
     point_list: anytype,
     p0: Point,
     p1: Point,

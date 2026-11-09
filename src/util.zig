@@ -144,6 +144,12 @@ pub const utils = struct {
                     const v = try parseColor(decl_name, att, val);
                     if (v) |a| @field(self, decl_name) = a;
                 }
+                if (comptime @typeInfo(declT) == .optional and @typeInfo(@typeInfo(declT).optional.child) == .@"enum") {
+                    if (std.mem.eql(u8, decl_name, att)) {
+                        const keyword = std.mem.trim(u8, val, " \t\n\r");
+                        if (std.meta.stringToEnum(@typeInfo(declT).optional.child, keyword)) |a| @field(self, decl_name) = a;
+                    }
+                }
             }
         }
     }
