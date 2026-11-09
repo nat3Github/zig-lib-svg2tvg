@@ -145,7 +145,7 @@ pub fn renderStream(
                 .r = mapToGamma8(color[0] / final_a),
                 .g = mapToGamma8(color[1] / final_a),
                 .b = mapToGamma8(color[2] / final_a),
-                .a = @intFromFloat(255.0 * color[3]),
+                .a = @intFromFloat(255.0 * std.math.clamp(color[3], 0, 1)),
             };
         } else {
             pixel.* = Color8{ .r = 0xFF, .g = 0x00, .b = 0xFF, .a = 0x00 };
@@ -166,7 +166,7 @@ fn mapToGamma(val: f32) f32 {
 }
 
 fn mapToGamma8(val: f32) u8 {
-    return @intFromFloat(255.0 * mapToGamma(val));
+    return @intFromFloat(255.0 * std.math.clamp(mapToGamma(val), 0, 1));
 }
 
 const Framebuffer = struct {
