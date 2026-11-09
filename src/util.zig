@@ -109,7 +109,7 @@ pub const utils = struct {
     pub fn parsePointList(alloc: Allocator, property_name: []const u8, att: []const u8, val: []const u8) !?std.array_list.Managed(Point) {
         if (std.mem.eql(u8, property_name, att)) {
             var list = std.array_list.Managed(Point).init(alloc);
-            var split = std.mem.splitAny(u8, val, " ,");
+            var split = std.mem.tokenizeAny(u8, val, " ,\t\n\r");
             var point = Point{ .x = 0, .y = 0 };
             var k: bool = true;
             while (split.next()) |n| {
