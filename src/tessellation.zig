@@ -155,6 +155,9 @@ const Edge = struct {
     /// Both null once merged away.
     top: ?*Vertex,
     bottom: ?*Vertex,
+    /// The input segment this edge is a piece of. Crossings come from it, so rounding errors do not
+    /// accumulate across splits.
+    line: [2]GridPoint,
     left: ?*Edge = null,
     right: ?*Edge = null,
     prev_edge_above: ?*Edge = null,
@@ -298,7 +301,7 @@ const Tessellator = struct {
         if (tessellator.edge_count >= tessellator.limits.max_edges) return error.TooComplex;
         tessellator.edge_count += 1;
         const edge = try tessellator.arena.create(Edge);
-        edge.* = .{ .winding = winding, .top = top, .bottom = bottom };
+        edge.* = .{ .winding = winding, .top = top, .bottom = bottom, .line = .{ top.point, bottom.point } };
         return edge;
     }
 
@@ -539,6 +542,7 @@ const Tessellator = struct {
             try tessellator.setBottom(edge, vertex, sweep);
         }
         const new_edge = try tessellator.allocateEdge(top, bottom, winding);
+        new_edge.line = edge.line;
         try tessellator.insertBelow(new_edge, top);
         try tessellator.insertAbove(new_edge, bottom);
         tessellator.merge_collinear_calls = 0;
@@ -923,7 +927,33 @@ fn segmentCrossing(edge: *const Edge, other: *const Edge) ?GridPoint {
     if (top_side == bottom_side) return null;
     if (sameStrictSign(top_side, bottom_side)) return null;
     if (sameStrictSign(edge.side(other_top.point), edge.side(other_bottom.point))) return null;
-    return arrangement.snappedCrossing(top.point, bottom.point, top_side, bottom_side);
+    const crossing = lineCrossing(edge.line, other.line) orelse return arrangement.snappedCrossing(top.point, bottom.point, top_side, bottom_side);
+    const clamped = clampToBounds(clampToBounds(crossing, edge), other);
+    return .{ @intCast(clamped[0]), @intCast(clamped[1]) };
+}
+
+/// The crossing of two lines rounded to the grid, or null if they are parallel.
+fn lineCrossing(line: [2]GridPoint, other: [2]GridPoint) ?[2]i128 {
+    const from_side: i128 = orientation(other[0], other[1], line[0]);
+    const to_side: i128 = orientation(other[0], other[1], line[1]);
+    if (from_side == to_side) return null;
+    const sign: i128 = if (from_side > to_side) 1 else -1;
+    const denominator = (from_side - to_side) * sign;
+    var crossing: [2]i128 = undefined;
+    for (&crossing, line[0], line[1]) |*coordinate, from, to| {
+        const numerator = @as(i128, from) * denominator + (@as(i128, to) - from) * from_side * sign;
+        coordinate.* = @divFloor(2 * numerator + denominator, 2 * denominator);
+    }
+    return crossing;
+}
+
+/// Skia's clamp: each coordinate into the bounding box of the edge.
+fn clampToBounds(point: [2]i128, edge: *const Edge) [2]i128 {
+    var clamped: [2]i128 = undefined;
+    for (&clamped, point, edge.top.?.point, edge.bottom.?.point) |*coordinate, value, top, bottom| {
+        coordinate.* = std.math.clamp(value, @min(top, bottom), @max(top, bottom));
+    }
+    return clamped;
 }
 
 fn sameStrictSign(a: i64, b: i64) bool {
