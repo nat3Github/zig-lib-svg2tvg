@@ -302,7 +302,7 @@ pub const IndexSlice = struct { offset: usize, len: usize };
 
 // this is the allocation threshold for images.
 // when we go over this, we require `allocator` to be set.
-const temp_buffer_size = 256;
+pub const temp_buffer_size = 256;
 
 /// Renders a single TinyVG command. Performs no aliasing, super sampling or blending.
 /// - `framebuffer` implements the backing storage for rendering, must provide function `setPixel(x: isize, y: isize, color: tvg.Color)` and fields `width` and `height`.
