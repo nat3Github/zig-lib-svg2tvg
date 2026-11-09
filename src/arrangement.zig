@@ -409,7 +409,7 @@ fn strictlyInside(edge: DirectedEdge, point: GridPoint) bool {
 
 /// from + (to - from) * from_side / (from_side - to_side), rounded to the nearest grid point.
 /// The exact crossing lies inside the bounding box of both edges, and so does the rounded one.
-fn snappedCrossing(from: GridPoint, to: GridPoint, from_side: i128, to_side: i128) GridPoint {
+pub fn snappedCrossing(from: GridPoint, to: GridPoint, from_side: i128, to_side: i128) GridPoint {
     var numerator_scale = from_side;
     var denominator = from_side - to_side;
     if (denominator < 0) {
