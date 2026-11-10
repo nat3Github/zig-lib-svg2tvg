@@ -56,6 +56,8 @@ const max_bisector_cosine = 0.999;
 /// Corner lifts fall to 0 within half a pixel diagonal of the boundary vertex.
 const corner_radius = 0.5 * std.math.sqrt2 * grid_per_pixel;
 const min_corner_correction = 1.0 / 32.0;
+/// One pixel, in squared grid units.
+const min_kept_area: i128 = tessellation.grid_per_pixel * tessellation.grid_per_pixel;
 
 pub const Result = struct {
     /// Filled with the nonzero rule.
@@ -69,6 +71,7 @@ pub fn tessellate(tessellator: *Tessellator, mesh: VertexList, fill_rule: FillRu
     var inner_mesh: VertexList = .{};
     var outer_mesh: VertexList = .{};
     var rings: std.ArrayList([]const RingEntry) = .empty;
+    var collapsed_ring = false;
     try removeNonBoundaryEdges(tessellator, mesh, fill_rule);
     try markPinchVertices(tessellator, mesh);
     var vertex = mesh.head;
@@ -76,14 +79,14 @@ pub fn tessellate(tessellator: *Tessellator, mesh: VertexList, fill_rule: FillRu
         while (current.first_edge_below) |edge| {
             var boundary = try extractBoundary(tessellator, edge, fill_rule);
             try simplifyBoundary(tessellator, &boundary);
-            const ring = try strokeBoundary(tessellator, boundary, &inner_mesh, &outer_mesh);
+            const ring = try strokeBoundary(tessellator, boundary, &inner_mesh, &outer_mesh, &collapsed_ring);
             if (ring.len > 0) try rings.append(tessellator.arena, ring);
         }
     }
     try tessellator.sortMesh(&inner_mesh);
     try tessellator.sortMesh(&outer_mesh);
     _ = try tessellator.mergeCoincidentVertices(&inner_mesh);
-    var complex = try tessellator.mergeCoincidentVertices(&outer_mesh);
+    var complex = try tessellator.mergeCoincidentVertices(&outer_mesh) or collapsed_ring;
     if (try tessellator.simplify(&inner_mesh)) complex = true;
     if (try tessellator.simplify(&outer_mesh)) complex = true;
     if (try collapseOverlapRegions(tessellator, &inner_mesh, .inner)) complex = true;
@@ -304,8 +307,12 @@ fn extractBoundary(tessellator: *Tessellator, first: *Edge, fill_rule: FillRule)
 }
 
 /// Replaces pointy vertices, whose neighbors lie within a quarter pixel of the opposite edge, by a
-/// straight join. They would invert when offset.
+/// straight join. They would invert when offset. A boundary that would vanish stays as it was if
+/// it covers at least min_kept_area.
 fn simplifyBoundary(tessellator: *Tessellator, boundary: *Boundary) InternalError!void {
+    var original_edges: std.ArrayList(*BoundaryEdge) = .empty;
+    var original = boundary.head;
+    while (original) |edge| : (original = edge.next) try original_edges.append(tessellator.arena, edge);
     var prev_edge = boundary.tail orelse return;
     var next_edge = boundary.head;
     while (next_edge) |edge| {
@@ -316,7 +323,7 @@ fn simplifyBoundary(tessellator: *Tessellator, boundary: *Boundary) InternalErro
             assert(prev_edge != edge);
             boundary.remove(prev_edge);
             boundary.remove(edge);
-            prev_edge = boundary.tail orelse return;
+            prev_edge = boundary.tail orelse break;
             next_edge = boundary.head;
         } else if (dotProduct(prev_edge.direction(), edge.direction()) < 0 and (edge.isPointyNeighbor(prev) or prev_edge.isPointyNeighbor(next))) {
             const join = try BoundaryEdge.make(tessellator, prev, next);
@@ -335,6 +342,15 @@ fn simplifyBoundary(tessellator: *Tessellator, boundary: *Boundary) InternalErro
             next_edge = edge.next;
         }
     }
+    if (boundary.head) |head| if (head.next != null and head.next.?.next != null) return;
+    var doubled_area: i128 = 0;
+    for (original_edges.items) |edge| doubled_area += tessellation.orientation(.{ 0, 0 }, edge.from.point, edge.to.point);
+    if (@abs(doubled_area) >= 2 * min_kept_area) restoreBoundary(boundary, original_edges.items);
+}
+
+fn restoreBoundary(boundary: *Boundary, edges: []const *BoundaryEdge) void {
+    boundary.* = .{};
+    for (edges) |edge| boundary.insertAfter(edge, boundary.tail);
 }
 
 /// Ring corners at a join, each inner corner partners the outer corner at the same index.
@@ -359,11 +375,13 @@ const RingEntry = struct {
 };
 
 /// Offsets the boundary half a pixel to both sides into the ring meshes, inner corners with
-/// coverage 1 and outer corners with coverage 0. Returns the ring in boundary order.
-fn strokeBoundary(tessellator: *Tessellator, boundary: Boundary, inner_mesh: *VertexList, outer_mesh: *VertexList) InternalError![]const RingEntry {
+/// coverage 1 and outer corners with coverage 0. Returns the ring in boundary order. A wholly
+/// inverted inner ring becomes one vertex at the centroid, which keeps the ink of the fill.
+fn strokeBoundary(tessellator: *Tessellator, boundary: Boundary, inner_mesh: *VertexList, outer_mesh: *VertexList, collapsed_ring: *bool) InternalError![]const RingEntry {
     const head = boundary.head orelse return &.{};
     if (head.next == null or head.next.?.next == null) return &.{};
     var ring: std.ArrayList(RingEntry) = .empty;
+    var inner_vertices: VertexList = .{};
     var inner_inversion = true;
     var outer_inversion = true;
     var first_unpulled: [2]GridPoint = undefined;
@@ -382,7 +400,7 @@ fn strokeBoundary(tessellator: *Tessellator, boundary: Boundary, inner_mesh: *Ve
             // merge would make it synthetic and keep it out of the collapse.
             const shared_inner = index == 1 and tessellation.pointsEqual(inner_point, ramp.inner[0]);
             const shared_outer = index == 1 and tessellation.pointsEqual(outer_point, ramp.outer[0]);
-            const inner = if (shared_inner) ring.getLast().inner else try ringVertex(tessellator, inner_mesh, inner_point, ramp.inner_coverage);
+            const inner = if (shared_inner) ring.getLast().inner else try ringVertex(tessellator, &inner_vertices, inner_point, ramp.inner_coverage);
             const outer = if (shared_outer) ring.getLast().outer else try ringVertex(tessellator, outer_mesh, outer_point, ramp.outer_coverage);
             if (!shared_inner) inner.partner = outer;
             if (!shared_outer) outer.partner = inner;
@@ -400,6 +418,20 @@ fn strokeBoundary(tessellator: *Tessellator, boundary: Boundary, inner_mesh: *Ve
     if (count == 0) return &.{};
     if (!runsAgainst(last_unpulled[0], first_unpulled[0], boundary.tail.?)) inner_inversion = false;
     if (!runsAgainst(last_unpulled[1], first_unpulled[1], boundary.tail.?)) outer_inversion = false;
+    if (inner_inversion and ringArea(ring.items) == 0) {
+        if (try ringCentroid(tessellator, boundary, ring.items)) |center| {
+            outer_mesh.append(center);
+            for (ring.items) |entry| entry.inner.collapsed_into = center;
+            const outer_winding: i32 = if (outer_inversion) -1 else 1;
+            for (ring.items, 0..) |entry, index| {
+                try tessellator.charge();
+                try tessellator.makeConnectingEdge(entry.outer, ring.items[(index + 1) % count].outer, .outer, outer_winding);
+            }
+            collapsed_ring.* = true;
+        }
+        return &.{};
+    }
+    inner_mesh.appendList(inner_vertices);
     // Inner -2 and outer 1 fill the ramp with 1 and the interior with -1, or 3 where a thin part
     // inverts. A wholly inverted ring flips them, so collapseOverlapRegions finds it.
     const inner_winding: i32 = if (inner_inversion) 2 else -2;
@@ -411,6 +443,40 @@ fn strokeBoundary(tessellator: *Tessellator, boundary: Boundary, inner_mesh: *Ve
         try tessellator.makeConnectingEdge(entry.outer, next.outer, .outer, outer_winding);
     }
     return ring.items;
+}
+
+/// The boundary's centroid with the coverage that gives a fan from the outer ring the ink of the
+/// fill, null for a boundary without area.
+fn ringCentroid(tessellator: *Tessellator, boundary: Boundary, ring: []const RingEntry) error{OutOfMemory}!?*Vertex {
+    const origin = boundary.head.?.from.point;
+    var boundary_area: i128 = 0;
+    var moment: [2]i128 = .{ 0, 0 };
+    var edge: ?*BoundaryEdge = boundary.head;
+    while (edge) |current| : (edge = current.next) {
+        const from = antialiasDirection(origin, current.from.point);
+        const to = antialiasDirection(origin, current.to.point);
+        const doubled_area: i128 = crossProduct(from, to);
+        boundary_area += doubled_area;
+        for (&moment, from, to) |*coordinate, a, b| coordinate.* += doubled_area * (a + b);
+    }
+    if (boundary_area == 0) return null;
+    var outer_area: i128 = 0;
+    for (ring, 0..) |entry, index| {
+        const next = ring[(index + 1) % ring.len].outer.point;
+        outer_area += crossProduct(antialiasDirection(origin, entry.outer.point), antialiasDirection(origin, next));
+    }
+    const area: f64 = @floatFromInt(boundary_area);
+    const offset = [2]f64{ @as(f64, @floatFromInt(moment[0])) / (3 * area), @as(f64, @floatFromInt(moment[1])) / (3 * area) };
+    const point = offsetPoint(origin, offset) orelse return null;
+    if (outer_area == 0) return null;
+    const coverage = std.math.clamp(3 * @abs(area) / @abs(@as(f64, @floatFromInt(outer_area))), 0, 1);
+    return try makeVertex(tessellator, point, @floatCast(coverage));
+}
+
+fn ringArea(ring: []const RingEntry) i128 {
+    var area: i128 = 0;
+    for (ring, 0..) |entry, index| area += tessellation.orientation(.{ 0, 0 }, entry.inner.point, ring[(index + 1) % ring.len].inner.point);
+    return area;
 }
 
 fn ringVertex(tessellator: *Tessellator, mesh: *VertexList, point: GridPoint, coverage: f32) error{OutOfMemory}!*Vertex {
