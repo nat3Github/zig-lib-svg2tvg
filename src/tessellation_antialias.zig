@@ -1,9 +1,3 @@
-//! Anti-aliasing for the sweep tessellator, a port of Skia's GrAATriangulator onto the integer grid.
-//! The filled region's boundary is offset half a pixel inward (coverage 1) and outward
-//! (coverage 0), triangles between the rings interpolate coverage per vertex. Where the rings of
-//! close edges overlap, the overlap collapses along its straight skeleton as in Skia, and each
-//! collapsed vertex gets the summed coverage of the two ramps meeting there.
-//!
 //! Ported from Skia, src/gpu/ganesh/geometry/GrAATriangulator.{h,cpp}:
 //!
 //! Copyright 2020 Google LLC
@@ -350,6 +344,9 @@ const Ramp = struct {
     count: usize,
     inner_coverage: f32 = 1,
     outer_coverage: f32 = 0,
+    /// The corners before the pull back, for the inversion test.
+    inner_unpulled: [2]GridPoint,
+    outer_unpulled: [2]GridPoint,
 };
 
 /// Partnered ring corners, the boundary vertex lies between them.
@@ -369,6 +366,8 @@ fn strokeBoundary(tessellator: *Tessellator, boundary: Boundary, inner_mesh: *Ve
     var ring: std.ArrayList(RingEntry) = .empty;
     var inner_inversion = true;
     var outer_inversion = true;
+    var first_unpulled: [2]GridPoint = undefined;
+    var last_unpulled: [2]GridPoint = undefined;
     var prev_edge = boundary.tail.?;
     var next_edge: ?*BoundaryEdge = head;
     while (next_edge) |edge| : ({
@@ -387,18 +386,20 @@ fn strokeBoundary(tessellator: *Tessellator, boundary: Boundary, inner_mesh: *Ve
             const outer = if (shared_outer) ring.getLast().outer else try ringVertex(tessellator, outer_mesh, outer_point, ramp.outer_coverage);
             if (!shared_inner) inner.partner = outer;
             if (!shared_outer) outer.partner = inner;
+            const unpulled = [2]GridPoint{ ramp.inner_unpulled[index], ramp.outer_unpulled[index] };
+            if (ring.items.len == 0) first_unpulled = unpulled;
             if (index == 0 and ring.items.len > 0) {
-                const last = ring.getLast();
-                if (!runsAgainst(last.inner, inner, prev_edge)) inner_inversion = false;
-                if (!runsAgainst(last.outer, outer, prev_edge)) outer_inversion = false;
+                if (!runsAgainst(last_unpulled[0], unpulled[0], prev_edge)) inner_inversion = false;
+                if (!runsAgainst(last_unpulled[1], unpulled[1], prev_edge)) outer_inversion = false;
             }
+            last_unpulled = unpulled;
             try ring.append(tessellator.arena, .{ .inner = inner, .outer = outer, .vertex = edge.from.point, .lift = lift });
         }
     }
     const count = ring.items.len;
     if (count == 0) return &.{};
-    if (!runsAgainst(ring.getLast().inner, ring.items[0].inner, boundary.tail.?)) inner_inversion = false;
-    if (!runsAgainst(ring.getLast().outer, ring.items[0].outer, boundary.tail.?)) outer_inversion = false;
+    if (!runsAgainst(last_unpulled[0], first_unpulled[0], boundary.tail.?)) inner_inversion = false;
+    if (!runsAgainst(last_unpulled[1], first_unpulled[1], boundary.tail.?)) outer_inversion = false;
     // Inner -2 and outer 1 fill the ramp with 1 and the interior with -1, or 3 where a thin part
     // inverts. A wholly inverted ring flips them, so collapseOverlapRegions finds it.
     const inner_winding: i32 = if (inner_inversion) 2 else -2;
@@ -419,8 +420,8 @@ fn ringVertex(tessellator: *Tessellator, mesh: *VertexList, point: GridPoint, co
 }
 
 /// Skia's inversion test: the ring piece runs against the boundary edge in sweep order.
-fn runsAgainst(from: *const Vertex, to: *const Vertex, edge: *const BoundaryEdge) bool {
-    return sweepLessThan(from.point, to.point) != sweepLessThan(edge.from.point, edge.to.point);
+fn runsAgainst(from: GridPoint, to: GridPoint, edge: *const BoundaryEdge) bool {
+    return sweepLessThan(from, to) != sweepLessThan(edge.from.point, edge.to.point);
 }
 
 /// Where the offset lines of two consecutive boundary edges meet. Null where the boundary runs
@@ -443,7 +444,7 @@ fn joinRamp(prev_edge: *const BoundaryEdge, edge: *const BoundaryEdge) ?Ramp {
         const offset = scaled(normal_sum, ramp_half_width / (1 + cosine));
         const inner = offsetPoint(vertex, offset) orelse return null;
         const outer = offsetPoint(vertex, scaled(offset, -1)) orelse return null;
-        return .{ .inner = .{ inner, inner }, .outer = .{ outer, outer }, .count = 1 };
+        return .{ .inner = .{ inner, inner }, .outer = .{ outer, outer }, .count = 1, .inner_unpulled = .{ inner, inner }, .outer_unpulled = .{ outer, outer } };
     }
     const cross = crossProduct(incoming, outgoing);
     if (cross == 0) return null;
@@ -473,10 +474,12 @@ fn joinRamp(prev_edge: *const BoundaryEdge, edge: *const BoundaryEdge) ?Ramp {
     const opposite = offsetPoint(vertex, opposite_offset) orelse return null;
     const first = offsetPoint(vertex, first_offset) orelse return null;
     const second = offsetPoint(vertex, second_offset) orelse return null;
+    // A miter too far for the grid still tells the inversion test the direction.
+    const unpulled = offsetPoint(vertex, scaled(direction, @min(miter_distance, max_grid_coordinate / 2))) orelse opposite;
     var ramp: Ramp = if (concave)
-        .{ .inner = .{ first, second }, .outer = .{ opposite, opposite }, .count = 2 }
+        .{ .inner = .{ first, second }, .outer = .{ opposite, opposite }, .count = 2, .inner_unpulled = .{ first, second }, .outer_unpulled = .{ unpulled, unpulled } }
     else
-        .{ .inner = .{ opposite, opposite }, .outer = .{ first, second }, .count = 2 };
+        .{ .inner = .{ opposite, opposite }, .outer = .{ first, second }, .count = 2, .inner_unpulled = .{ unpulled, unpulled }, .outer_unpulled = .{ first, second } };
     if (distance < miter_distance) {
         // The pulled back corner lies closer to the boundary, both ramps meet there as in a collapse.
         const incoming_coverage = rampCoverageAt(incoming_normal, opposite_offset);
