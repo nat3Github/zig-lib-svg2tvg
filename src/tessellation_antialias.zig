@@ -57,7 +57,7 @@ const max_direction_component = 1 << 25;
 /// would cost the coverage sums their precision.
 const max_coverage_gradient = 16.0 / grid_per_pixel;
 
-/// Corner pyramids fall to 0 within half a pixel diagonal of the corner.
+/// Corner lifts fall to 0 within half a pixel diagonal of the boundary vertex.
 const corner_radius = 0.5 * std.math.sqrt2 * grid_per_pixel;
 const min_corner_correction = 1.0 / 32.0;
 
