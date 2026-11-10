@@ -418,7 +418,7 @@ fn strokeBoundary(tessellator: *Tessellator, boundary: Boundary, inner_mesh: *Ve
     if (count == 0) return &.{};
     if (!runsAgainst(last_unpulled[0], first_unpulled[0], boundary.tail.?)) inner_inversion = false;
     if (!runsAgainst(last_unpulled[1], first_unpulled[1], boundary.tail.?)) outer_inversion = false;
-    if (inner_inversion and ringArea(ring.items) == 0) {
+    if (inner_inversion and hasRoundingArea(ring.items)) {
         if (try ringCentroid(tessellator, boundary, ring.items)) |center| {
             outer_mesh.append(center);
             for (ring.items) |entry| entry.inner.collapsed_into = center;
@@ -445,38 +445,44 @@ fn strokeBoundary(tessellator: *Tessellator, boundary: Boundary, inner_mesh: *Ve
     return ring.items;
 }
 
-/// The boundary's centroid with the coverage that gives a fan from the outer ring the ink of the
-/// fill, null for a boundary without area.
 fn ringCentroid(tessellator: *Tessellator, boundary: Boundary, ring: []const RingEntry) error{OutOfMemory}!?*Vertex {
     const origin = boundary.head.?.from.point;
     var boundary_area: i128 = 0;
-    var moment: [2]i128 = .{ 0, 0 };
     var edge: ?*BoundaryEdge = boundary.head;
     while (edge) |current| : (edge = current.next) {
-        const from = antialiasDirection(origin, current.from.point);
-        const to = antialiasDirection(origin, current.to.point);
-        const doubled_area: i128 = crossProduct(from, to);
-        boundary_area += doubled_area;
-        for (&moment, from, to) |*coordinate, a, b| coordinate.* += doubled_area * (a + b);
+        boundary_area += crossProduct(antialiasDirection(origin, current.from.point), antialiasDirection(origin, current.to.point));
     }
     if (boundary_area == 0) return null;
     var outer_area: i128 = 0;
+    // The fan's ink does not depend on its apex, it goes where the inner ring collapsed.
+    var weighted_middle: [2]f64 = .{ 0, 0 };
+    var perimeter: f64 = 0;
     for (ring, 0..) |entry, index| {
-        const next = ring[(index + 1) % ring.len].outer.point;
-        outer_area += crossProduct(antialiasDirection(origin, entry.outer.point), antialiasDirection(origin, next));
+        const next = ring[(index + 1) % ring.len];
+        outer_area += crossProduct(antialiasDirection(origin, entry.outer.point), antialiasDirection(origin, next.outer.point));
+        const from = relativePoint(origin, entry.inner.point);
+        const to = relativePoint(origin, next.inner.point);
+        const length = std.math.hypot(to[0] - from[0], to[1] - from[1]);
+        for (&weighted_middle, from, to) |*coordinate, a, b| coordinate.* += length * (a + b) / 2;
+        perimeter += length;
     }
-    const area: f64 = @floatFromInt(boundary_area);
-    const offset = [2]f64{ @as(f64, @floatFromInt(moment[0])) / (3 * area), @as(f64, @floatFromInt(moment[1])) / (3 * area) };
-    const point = offsetPoint(origin, offset) orelse return null;
     if (outer_area == 0) return null;
+    const offset = if (perimeter > 0) scaled(weighted_middle, 1 / perimeter) else relativePoint(origin, ring[0].inner.point);
+    const point = offsetPoint(origin, offset) orelse return null;
+    const area: f64 = @floatFromInt(boundary_area);
     const coverage = std.math.clamp(3 * @abs(area) / @abs(@as(f64, @floatFromInt(outer_area))), 0, 1);
     return try makeVertex(tessellator, point, @floatCast(coverage));
 }
 
-fn ringArea(ring: []const RingEntry) i128 {
-    var area: i128 = 0;
-    for (ring, 0..) |entry, index| area += tessellation.orientation(.{ 0, 0 }, entry.inner.point, ring[(index + 1) % ring.len].inner.point);
-    return area;
+fn hasRoundingArea(ring: []const RingEntry) bool {
+    var doubled_area: i128 = 0;
+    var perimeter: f64 = 0;
+    for (ring, 0..) |entry, index| {
+        const next = ring[(index + 1) % ring.len].inner.point;
+        doubled_area += tessellation.orientation(.{ 0, 0 }, entry.inner.point, next);
+        perimeter += vectorLength(antialiasDirection(entry.inner.point, next));
+    }
+    return @as(f64, @floatFromInt(@abs(doubled_area))) <= 2 * perimeter;
 }
 
 fn ringVertex(tessellator: *Tessellator, mesh: *VertexList, point: GridPoint, coverage: f32) error{OutOfMemory}!*Vertex {
