@@ -931,12 +931,17 @@ const Output = struct {
     }
 };
 
-/// Skia's rule: crossings on an inner edge stay fully covered, crossings of outer edges stay
-/// uncovered, others take the larger coverage interpolated along both edges.
+/// Skia's rule, with interpolation along inner edges whose ends lost full coverage: crossings on
+/// an inner edge take its coverage, crossings of outer edges stay uncovered, others take the
+/// larger coverage interpolated along both edges.
 fn crossingCoverage(edge: *const Edge, other: *const Edge, point: GridPoint) f32 {
-    if (edge.kind == .inner or other.kind == .inner) return 1;
+    const along = coverageAlong(edge.top.?, edge.bottom.?, point);
+    const other_along = coverageAlong(other.top.?, other.bottom.?, point);
+    if (edge.kind == .inner and other.kind == .inner) return @max(along, other_along);
+    if (edge.kind == .inner) return along;
+    if (other.kind == .inner) return other_along;
     if (edge.kind == .outer and other.kind == .outer) return 0;
-    return @max(coverageAlong(edge.top.?, edge.bottom.?, point), coverageAlong(other.top.?, other.bottom.?, point));
+    return @max(along, other_along);
 }
 
 /// Coverage interpolated from `from` to `to` at the projection of `point`.

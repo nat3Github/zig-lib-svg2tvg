@@ -348,6 +348,8 @@ const Ramp = struct {
     inner: [2]GridPoint,
     outer: [2]GridPoint,
     count: usize,
+    inner_coverage: f32 = 1,
+    outer_coverage: f32 = 0,
 };
 
 /// Partnered ring corners, the boundary vertex lies between them.
@@ -381,8 +383,8 @@ fn strokeBoundary(tessellator: *Tessellator, boundary: Boundary, inner_mesh: *Ve
             // merge would make it synthetic and keep it out of the collapse.
             const shared_inner = index == 1 and tessellation.pointsEqual(inner_point, ramp.inner[0]);
             const shared_outer = index == 1 and tessellation.pointsEqual(outer_point, ramp.outer[0]);
-            const inner = if (shared_inner) ring.getLast().inner else try ringVertex(tessellator, inner_mesh, inner_point, 1);
-            const outer = if (shared_outer) ring.getLast().outer else try ringVertex(tessellator, outer_mesh, outer_point, 0);
+            const inner = if (shared_inner) ring.getLast().inner else try ringVertex(tessellator, inner_mesh, inner_point, ramp.inner_coverage);
+            const outer = if (shared_outer) ring.getLast().outer else try ringVertex(tessellator, outer_mesh, outer_point, ramp.outer_coverage);
             if (!shared_inner) inner.partner = outer;
             if (!shared_outer) outer.partner = inner;
             if (index == 0 and ring.items.len > 0) {
@@ -459,18 +461,36 @@ fn joinRamp(prev_edge: *const BoundaryEdge, edge: *const BoundaryEdge) ?Ramp {
     const first_offset = solveLines(bisector, tangent_distance, incoming_normal, offset_distance) orelse return null;
     const second_offset = solveLines(bisector, tangent_distance, outgoing_normal, offset_distance) orelse return null;
     const direction = scaled(bisector, if (concave) -1 else 1);
-    var distance = ramp_half_width * sum_length / (1 + cosine);
+    const miter_distance = ramp_half_width * sum_length / (1 + cosine);
+    var distance = miter_distance;
     if (cosine < -pull_back_cosine) {
         const incoming_projection = dotFloat(incoming_unit, direction);
         if (incoming_projection < 0) distance = @min(distance, vectorLength(incoming) / -incoming_projection);
         const outgoing_projection = dotFloat(outgoing_unit, direction);
         if (outgoing_projection > 0) distance = @min(distance, vectorLength(outgoing) / outgoing_projection);
     }
-    const opposite = offsetPoint(vertex, scaled(direction, distance)) orelse return null;
+    const opposite_offset = scaled(direction, distance);
+    const opposite = offsetPoint(vertex, opposite_offset) orelse return null;
     const first = offsetPoint(vertex, first_offset) orelse return null;
     const second = offsetPoint(vertex, second_offset) orelse return null;
-    if (concave) return .{ .inner = .{ first, second }, .outer = .{ opposite, opposite }, .count = 2 };
-    return .{ .inner = .{ opposite, opposite }, .outer = .{ first, second }, .count = 2 };
+    var ramp: Ramp = if (concave)
+        .{ .inner = .{ first, second }, .outer = .{ opposite, opposite }, .count = 2 }
+    else
+        .{ .inner = .{ opposite, opposite }, .outer = .{ first, second }, .count = 2 };
+    if (distance < miter_distance) {
+        // The pulled back corner lies closer to the boundary, both ramps meet there as in a collapse.
+        const incoming_coverage = rampCoverageAt(incoming_normal, opposite_offset);
+        const outgoing_coverage = rampCoverageAt(outgoing_normal, opposite_offset);
+        if (concave) {
+            ramp.outer_coverage = @floatCast(@max(incoming_coverage, outgoing_coverage));
+        } else ramp.inner_coverage = @floatCast(std.math.clamp(incoming_coverage + outgoing_coverage - 1, 0, 1));
+    }
+    return ramp;
+}
+
+/// One ramp's coverage at `offset` from the boundary vertex, `normal` points towards the fill.
+fn rampCoverageAt(normal: [2]f64, offset: [2]f64) f64 {
+    return std.math.clamp(0.5 + dotFloat(normal, offset) / grid_per_pixel, 0, 1);
 }
 
 /// The point q with normal · q = distance and other_normal · q = other_distance, null if the
