@@ -152,6 +152,8 @@ pub const Vertex = struct {
     synthetic: bool = false,
     /// Anti-aliasing: the skeleton vertex replacing this ring vertex, for partners it shares.
     collapsed_into: ?*Vertex = null,
+    /// Anti-aliasing: the filled region's boundary passes this vertex more than once.
+    pinch: bool = false,
 
     pub fn isConnected(vertex: *const Vertex) bool {
         return vertex.first_edge_above != null or vertex.first_edge_below != null;

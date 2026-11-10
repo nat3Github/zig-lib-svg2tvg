@@ -55,6 +55,7 @@ const max_grid_coordinate = 1 << 24;
 const max_direction_component = 1 << 25;
 /// Skia's miter angle, turns past about 166° pull the far corner back.
 const pull_back_cosine = 0.97;
+const pinch_tangent_distance = ramp_half_width / 8;
 /// Skia's limit for bisectors at crossings, about 2.6°.
 const max_bisector_cosine = 0.999;
 
@@ -75,6 +76,7 @@ pub fn tessellate(tessellator: *Tessellator, mesh: VertexList, fill_rule: FillRu
     var outer_mesh: VertexList = .{};
     var rings: std.ArrayList([]const RingEntry) = .empty;
     try removeNonBoundaryEdges(tessellator, mesh, fill_rule);
+    try markPinchVertices(tessellator, mesh);
     var vertex = mesh.head;
     while (vertex) |current| : (vertex = current.next) {
         while (current.first_edge_below) |edge| {
@@ -248,6 +250,20 @@ fn removeNonBoundaryEdges(tessellator: *Tessellator, mesh: VertexList, fill_rule
             assert(active.insertAfter(edge, prev));
             prev = edge;
         }
+    }
+}
+
+fn markPinchVertices(tessellator: *Tessellator, mesh: VertexList) InternalError!void {
+    var vertex = mesh.head;
+    while (vertex) |current| : (vertex = current.next) {
+        var edge_count: usize = 0;
+        var above = current.first_edge_above;
+        while (above) |edge| : (above = edge.next_edge_above) edge_count += 1;
+        var below = current.first_edge_below;
+        while (below) |edge| : (below = edge.next_edge_below) edge_count += 1;
+        try tessellator.charge();
+        assert(edge_count % 2 == 0);
+        current.pinch = edge_count > 2;
     }
 }
 
@@ -436,9 +452,12 @@ fn joinRamp(prev_edge: *const BoundaryEdge, edge: *const BoundaryEdge) ?Ramp {
     // corner is pulled back along the bisector to the perpendiculars through the neighbors.
     const bisector = scaled(normal_sum, 1 / sum_length);
     const concave = cross > 0;
-    const tangent_distance: f64 = if (concave) ramp_half_width else -ramp_half_width;
-    const first_offset = solveLines(bisector, tangent_distance, incoming_normal, tangent_distance) orelse return null;
-    const second_offset = solveLines(bisector, tangent_distance, outgoing_normal, tangent_distance) orelse return null;
+    const offset_distance: f64 = if (concave) ramp_half_width else -ramp_half_width;
+    // Past a pinch the tangent would reach into the other wedge of the fill, through it the
+    // rings of both wedges would coincide.
+    const tangent_distance = if (!concave and edge.from.pinch) pinch_tangent_distance else offset_distance;
+    const first_offset = solveLines(bisector, tangent_distance, incoming_normal, offset_distance) orelse return null;
+    const second_offset = solveLines(bisector, tangent_distance, outgoing_normal, offset_distance) orelse return null;
     const direction = scaled(bisector, if (concave) -1 else 1);
     var distance = ramp_half_width * sum_length / (1 + cosine);
     if (cosine < -pull_back_cosine) {
