@@ -109,10 +109,9 @@ pub fn fill(allocator: Allocator, contours: []const []const Point, options: Opti
 
     var output: Output = .{ .rotated = rotated };
     if (options.anti_alias) {
-        if (mesh.head) |head| {
-            output.anti_alias_origin = head.point;
-            try output.emitPolys(arena, try antialias.tessellate(&tessellator, mesh, head.point, options.fill_rule), .nonzero);
-        }
+        const result = try antialias.tessellate(&tessellator, mesh, options.fill_rule);
+        try output.emitPolys(arena, result.polys, .nonzero);
+        for (result.triangles) |triangle| try output.emitTriangle(arena, triangle[0], triangle[1], triangle[2]);
     } else try output.emitPolys(arena, try tessellator.tessellate(mesh), options.fill_rule);
 
     const positions = try allocator.dupe(Point, output.positions.items);
@@ -130,24 +129,8 @@ const max_merge_collinear_calls = 64;
 
 const Side = enum { left, right };
 
-/// Anti-aliased coverage a * x + b * y + c, in grid units relative to the anti-aliasing origin.
-pub const LinearCoverage = struct {
-    a: f64 = 0,
-    b: f64 = 0,
-    c: f64 = 0,
-
-    pub fn plus(coverage: LinearCoverage, other: LinearCoverage) LinearCoverage {
-        return .{ .a = coverage.a + other.a, .b = coverage.b + other.b, .c = coverage.c + other.c };
-    }
-
-    pub fn negated(coverage: LinearCoverage) LinearCoverage {
-        return .{ .a = -coverage.a, .b = -coverage.b, .c = -coverage.c };
-    }
-
-    fn at(coverage: LinearCoverage, point: [2]f64) f64 {
-        return coverage.a * point[0] + coverage.b * point[1] + coverage.c;
-    }
-};
+/// Anti-aliasing: edges of the inner and outer ring, and structural connectors with winding 0.
+pub const EdgeKind = enum { inner, outer, connector };
 
 pub const Vertex = struct {
     point: GridPoint,
@@ -161,6 +144,14 @@ pub const Vertex = struct {
     left_enclosing_edge: ?*Edge = null,
     right_enclosing_edge: ?*Edge = null,
     output_index: ?u32 = null,
+    /// Anti-aliasing: coverage at the vertex, triangles interpolate it.
+    coverage: f32 = 1,
+    /// Anti-aliasing: the corresponding vertex on the other ring.
+    partner: ?*Vertex = null,
+    /// Anti-aliasing: made by a crossing or a merge, not by stroking the boundary.
+    synthetic: bool = false,
+    /// Anti-aliasing: the skeleton vertex replacing this ring vertex, for partners it shares.
+    collapsed_into: ?*Vertex = null,
 
     pub fn isConnected(vertex: *const Vertex) bool {
         return vertex.first_edge_above != null or vertex.first_edge_below != null;
@@ -170,9 +161,7 @@ pub const Vertex = struct {
 pub const Edge = struct {
     /// +1 when the input runs from top to bottom.
     winding: i32,
-    /// Anti-aliasing: the coverage right of the edge minus left of it, like `winding`. `tessellate`
-    /// turns it into the coverage right of the edge.
-    coverage: LinearCoverage = .{},
+    kind: EdgeKind = .inner,
     /// Both null once merged away.
     top: ?*Vertex,
     bottom: ?*Vertex,
@@ -302,7 +291,6 @@ pub const Poly = struct {
     next: ?*Poly = null,
     partner: ?*Poly = null,
     count: u32 = 0,
-    coverage: LinearCoverage,
 
     fn lastVertex(poly: *const Poly) *Vertex {
         const tail = poly.tail orelse return poly.first_vertex;
@@ -328,11 +316,11 @@ pub const Tessellator = struct {
         tessellator.work += 1;
     }
 
-    fn allocateEdge(tessellator: *Tessellator, top: *Vertex, bottom: *Vertex, winding: i32, coverage: LinearCoverage) InternalError!*Edge {
+    fn allocateEdge(tessellator: *Tessellator, top: *Vertex, bottom: *Vertex, winding: i32, kind: EdgeKind) InternalError!*Edge {
         if (tessellator.edge_count >= tessellator.limits.max_edges) return error.TooComplex;
         tessellator.edge_count += 1;
         const edge = try tessellator.arena.create(Edge);
-        edge.* = .{ .winding = winding, .coverage = coverage, .top = top, .bottom = bottom, .line = .{ top.point, bottom.point } };
+        edge.* = .{ .winding = winding, .kind = kind, .top = top, .bottom = bottom, .line = .{ top.point, bottom.point } };
         return edge;
     }
 
@@ -345,18 +333,17 @@ pub const Tessellator = struct {
         }
         var prev = &vertices[vertices.len - 1];
         for (vertices) |*vertex| {
-            try tessellator.makeConnectingEdge(prev, vertex, 1, .{});
+            try tessellator.makeConnectingEdge(prev, vertex, .inner, 1);
             prev = vertex;
         }
     }
 
-    /// `winding_scale` and `coverage_step` are right minus left when walking from `from` to `to`.
-    pub fn makeConnectingEdge(tessellator: *Tessellator, from: *Vertex, to: *Vertex, winding_scale: i32, coverage_step: LinearCoverage) InternalError!void {
+    /// `winding_scale` is right minus left when walking from `from` to `to`.
+    pub fn makeConnectingEdge(tessellator: *Tessellator, from: *Vertex, to: *Vertex, kind: EdgeKind, winding_scale: i32) InternalError!void {
         if (pointsEqual(from.point, to.point)) return;
         const downward = sweepLessThan(from.point, to.point);
         const winding: i32 = if (downward) winding_scale else -winding_scale;
-        const coverage = if (downward) coverage_step else coverage_step.negated();
-        const edge = try tessellator.allocateEdge(if (downward) from else to, if (downward) to else from, winding, coverage);
+        const edge = try tessellator.allocateEdge(if (downward) from else to, if (downward) to else from, winding, kind);
         try tessellator.insertBelow(edge, edge.top.?);
         try tessellator.insertAbove(edge, edge.bottom.?);
         tessellator.merge_collinear_calls = 0;
@@ -390,6 +377,8 @@ pub const Tessellator = struct {
 
     fn mergeVertices(tessellator: *Tessellator, source: *Vertex, destination: *Vertex, mesh: *VertexList) InternalError!void {
         assert(source != destination);
+        destination.coverage = @max(destination.coverage, source.coverage);
+        if (source.partner) |partner| partner.partner = destination;
         while (source.first_edge_above) |edge| {
             tessellator.merge_collinear_calls = 0;
             try tessellator.setBottom(edge, destination, null);
@@ -399,6 +388,7 @@ pub const Tessellator = struct {
             try tessellator.setTop(edge, destination, null);
         }
         mesh.remove(source);
+        destination.synthetic = true;
     }
 
     fn insertAbove(tessellator: *Tessellator, edge: *Edge, vertex: *Vertex) InternalError!void {
@@ -516,17 +506,14 @@ pub const Tessellator = struct {
         if (pointsEqual(edge.top.?.point, other.top.?.point)) {
             try tessellator.rewind(sweep, edge.top.?);
             other.winding += edge.winding;
-            other.coverage = other.coverage.plus(edge.coverage);
             kill(edge, sweep);
         } else if (sweepLessThan(edge.top.?.point, other.top.?.point)) {
             try tessellator.rewind(sweep, edge.top.?);
             other.winding += edge.winding;
-            other.coverage = other.coverage.plus(edge.coverage);
             try tessellator.setBottom(edge, other.top.?, sweep);
         } else {
             try tessellator.rewind(sweep, other.top.?);
             edge.winding += other.winding;
-            edge.coverage = edge.coverage.plus(other.coverage);
             try tessellator.setBottom(other, edge.top.?, sweep);
         }
     }
@@ -537,17 +524,14 @@ pub const Tessellator = struct {
         if (pointsEqual(edge.bottom.?.point, other.bottom.?.point)) {
             try tessellator.rewind(sweep, edge.top.?);
             other.winding += edge.winding;
-            other.coverage = other.coverage.plus(edge.coverage);
             kill(edge, sweep);
         } else if (sweepLessThan(edge.bottom.?.point, other.bottom.?.point)) {
             try tessellator.rewind(sweep, other.top.?);
             edge.winding += other.winding;
-            edge.coverage = edge.coverage.plus(other.coverage);
             try tessellator.setTop(other, edge.bottom.?, sweep);
         } else {
             try tessellator.rewind(sweep, edge.top.?);
             other.winding += edge.winding;
-            other.coverage = other.coverage.plus(edge.coverage);
             try tessellator.setTop(edge, other.bottom.?, sweep);
         }
     }
@@ -577,25 +561,22 @@ pub const Tessellator = struct {
         var top: *Vertex = undefined;
         var bottom: *Vertex = undefined;
         var winding = edge.winding;
-        var coverage = edge.coverage;
         if (sweepLessThan(vertex.point, edge_top.point)) {
             top = vertex;
             bottom = edge_top;
             winding = -winding;
-            coverage = coverage.negated();
             try tessellator.setTop(edge, vertex, sweep);
         } else if (sweepLessThan(edge_bottom.point, vertex.point)) {
             top = edge_bottom;
             bottom = vertex;
             winding = -winding;
-            coverage = coverage.negated();
             try tessellator.setBottom(edge, vertex, sweep);
         } else {
             top = vertex;
             bottom = edge_bottom;
             try tessellator.setBottom(edge, vertex, sweep);
         }
-        const new_edge = try tessellator.allocateEdge(top, bottom, winding, coverage);
+        const new_edge = try tessellator.allocateEdge(top, bottom, winding, edge.kind);
         new_edge.line = edge.line;
         try tessellator.insertBelow(new_edge, top);
         try tessellator.insertAbove(new_edge, bottom);
@@ -646,9 +627,18 @@ pub const Tessellator = struct {
             try tessellator.charge();
             if (!sweepLessThan(crossing, vertex.point)) break;
         }
-        const vertex = for ([_]*Vertex{ left.top.?, left.bottom.?, right.top.?, right.bottom.? }) |end| {
+        const coverage = crossingCoverage(left, right, crossing);
+        const end_vertex = for ([_]*Vertex{ left.top.?, left.bottom.?, right.top.?, right.bottom.? }) |end| {
             if (pointsEqual(crossing, end.point)) break end;
-        } else try tessellator.makeSortedVertex(crossing, mesh, top);
+        } else null;
+        const vertex = end_vertex orelse vertex: {
+            const vertex = try tessellator.makeSortedVertex(crossing, mesh, top, coverage);
+            if (left.top.?.partner != null) {
+                vertex.synthetic = true;
+                try antialias.computeBisector(tessellator, left, right, vertex);
+            }
+            break :vertex vertex;
+        };
         // A split off the chord turns it, so vertices the sweep already passed can now touch it.
         var rewind_target = top orelse vertex;
         for ([_]*Edge{ left, right }) |edge| {
@@ -658,10 +648,11 @@ pub const Tessellator = struct {
         try tessellator.rewind(sweep, rewind_target);
         _ = try tessellator.splitEdge(left, vertex, sweep);
         _ = try tessellator.splitEdge(right, vertex, sweep);
+        vertex.coverage = @max(vertex.coverage, coverage);
         return true;
     }
 
-    fn makeSortedVertex(tessellator: *Tessellator, point: GridPoint, mesh: *VertexList, reference: ?*Vertex) InternalError!*Vertex {
+    pub fn makeSortedVertex(tessellator: *Tessellator, point: GridPoint, mesh: *VertexList, reference: ?*Vertex, coverage: f32) InternalError!*Vertex {
         var prev = reference;
         while (prev) |candidate| {
             if (!sweepLessThan(point, candidate.point)) break;
@@ -678,7 +669,7 @@ pub const Tessellator = struct {
         if (prev) |candidate| if (pointsEqual(candidate.point, point)) return candidate;
         if (next) |candidate| if (pointsEqual(candidate.point, point)) return candidate;
         const vertex = try tessellator.arena.create(Vertex);
-        vertex.* = .{ .point = point };
+        vertex.* = .{ .point = point, .coverage = coverage };
         mesh.insert(vertex, prev, next);
         return vertex;
     }
@@ -784,29 +775,27 @@ pub const Tessellator = struct {
                 var right = right_start;
                 if (left == right) {
                     if (left.tail != null and left.tail.?.side == .left) {
-                        left = try tessellator.makePoly(&polys, left.lastVertex(), left.winding, left.coverage);
+                        left = try tessellator.makePoly(&polys, left.lastVertex(), left.winding);
                         enclosing[0].?.right_poly = left;
                     } else {
-                        right = try tessellator.makePoly(&polys, right.lastVertex(), right.winding, right.coverage);
+                        right = try tessellator.makePoly(&polys, right.lastVertex(), right.winding);
                         enclosing[1].?.left_poly = right;
                     }
                 }
-                const join = try tessellator.allocateEdge(left.lastVertex(), vertex, 1, .{});
+                const join = try tessellator.allocateEdge(left.lastVertex(), vertex, 1, .inner);
                 left_poly = try tessellator.addPolyEdge(left, join, .right);
                 right_poly = try tessellator.addPolyEdge(right, join, .left);
             };
             var left_edge = first_below;
             left_edge.left_poly = left_poly;
             assert(active.insertAfter(left_edge, enclosing[0]));
-            if (enclosing[0]) |left| left_edge.coverage = left_edge.coverage.plus(left.coverage);
             var next_below = left_edge.next_edge_below;
             while (next_below) |right_edge| : (next_below = right_edge.next_edge_below) {
                 try tessellator.charge();
                 assert(active.insertAfter(right_edge, left_edge));
-                right_edge.coverage = right_edge.coverage.plus(left_edge.coverage);
                 const winding = (if (left_edge.left_poly) |poly| poly.winding else 0) + left_edge.winding;
                 if (winding != 0) {
-                    const poly = try tessellator.makePoly(&polys, vertex, winding, left_edge.coverage);
+                    const poly = try tessellator.makePoly(&polys, vertex, winding);
                     left_edge.right_poly = poly;
                     right_edge.left_poly = poly;
                 }
@@ -817,9 +806,9 @@ pub const Tessellator = struct {
         return polys;
     }
 
-    fn makePoly(tessellator: *Tessellator, polys: *?*Poly, vertex: *Vertex, winding: i32, coverage: LinearCoverage) InternalError!*Poly {
+    fn makePoly(tessellator: *Tessellator, polys: *?*Poly, vertex: *Vertex, winding: i32) InternalError!*Poly {
         const poly = try tessellator.arena.create(Poly);
-        poly.* = .{ .first_vertex = vertex, .winding = winding, .next = polys.*, .coverage = coverage };
+        poly.* = .{ .first_vertex = vertex, .winding = winding, .next = polys.* };
         polys.* = poly;
         return poly;
     }
@@ -856,7 +845,7 @@ pub const Tessellator = struct {
             poly.count += 1;
             return poly;
         }
-        edge = try tessellator.allocateEdge(tail_bottom, edge.bottom.?, 1, .{});
+        edge = try tessellator.allocateEdge(tail_bottom, edge.bottom.?, 1, .inner);
         tail.addEdge(edge);
         poly.count += 1;
         if (partner) |other| {
@@ -873,8 +862,6 @@ pub const Tessellator = struct {
 
 const Output = struct {
     rotated: bool,
-    /// Set when anti-aliasing, coverage then comes from each poly's linear function.
-    anti_alias_origin: ?GridPoint = null,
     positions: std.ArrayList(Point) = .empty,
     coverages: std.ArrayList(f32) = .empty,
     indices: std.ArrayList(u32) = .empty,
@@ -884,12 +871,12 @@ const Output = struct {
         while (poly) |current| : (poly = current.next) {
             if (current.count < 3 or !arrangement.isFilled(fill_rule, current.winding)) continue;
             var monotone = current.head;
-            while (monotone) |monotone_poly| : (monotone = monotone_poly.next) try output.emitMonotonePoly(arena, monotone_poly, current.coverage);
+            while (monotone) |monotone_poly| : (monotone = monotone_poly.next) try output.emitMonotonePoly(arena, monotone_poly);
         }
     }
 
     /// Ear clipping along the monotone chain, the vertices' list links become the chain.
-    fn emitMonotonePoly(output: *Output, arena: Allocator, monotone: *const MonotonePoly, coverage: LinearCoverage) error{OutOfMemory}!void {
+    fn emitMonotonePoly(output: *Output, arena: Allocator, monotone: *const MonotonePoly) error{OutOfMemory}!void {
         assert(monotone.winding != 0);
         var chain: VertexList = .{};
         var next_edge = monotone.first_edge;
@@ -912,10 +899,10 @@ const Output = struct {
         while (vertex != chain.tail.?) {
             const prev = vertex.prev.?;
             const next = vertex.next.?;
-            if (count == 3) return output.emitTriangle(arena, prev, vertex, next, coverage);
+            if (count == 3) return output.emitTriangle(arena, prev, vertex, next);
             const turn = orientation(prev.point, vertex.point, next.point);
             if (turn >= 0) {
-                try output.emitTriangle(arena, prev, vertex, next, coverage);
+                try output.emitTriangle(arena, prev, vertex, next);
                 prev.next = next;
                 next.prev = prev;
                 count -= 1;
@@ -924,68 +911,11 @@ const Output = struct {
         }
     }
 
-    fn emitTriangle(output: *Output, arena: Allocator, a: *Vertex, b: *Vertex, c: *Vertex, coverage: LinearCoverage) error{OutOfMemory}!void {
+    fn emitTriangle(output: *Output, arena: Allocator, a: *Vertex, b: *Vertex, c: *Vertex) error{OutOfMemory}!void {
         const area = orientation(a.point, b.point, c.point);
         if (area == 0) return;
         const corners: [3]*Vertex = if (area > 0) .{ a, b, c } else .{ a, c, b };
-        if (output.anti_alias_origin) |origin| return output.emitCoveredTriangle(arena, corners, coverage, origin);
         for (corners) |corner| try output.indices.append(arena, try output.indexOf(arena, corner));
-    }
-
-    /// Coverage clamped to [0, 1]: the triangle is cut where it reaches 0 and 1, parts at 0 are dropped.
-    fn emitCoveredTriangle(output: *Output, arena: Allocator, vertices: [3]*Vertex, coverage: LinearCoverage, origin: GridPoint) error{OutOfMemory}!void {
-        var triangle: [3]Corner = undefined;
-        var any_positive = false;
-        var all_in_range = true;
-        for (&triangle, vertices) |*corner, vertex| {
-            const position = [2]f64{ @floatFromInt(vertex.point[0]), @floatFromInt(vertex.point[1]) };
-            const relative = [2]f64{ @floatFromInt(@as(i64, vertex.point[0]) - origin[0]), @floatFromInt(@as(i64, vertex.point[1]) - origin[1]) };
-            // Quantized, so sums in a different order give the same cuts.
-            const value = @round(coverage.at(relative) * coverage_steps) / coverage_steps;
-            corner.* = .{ .vertex = vertex, .position = position, .value = value };
-            any_positive = any_positive or value > 0;
-            all_in_range = all_in_range and value >= 0 and value <= 1;
-        }
-        if (!any_positive) return;
-        if (all_in_range) return output.emitFan(arena, &triangle);
-        var positive_buffer: [4]Corner = undefined;
-        const positive = clipPolygon(&triangle, &positive_buffer, 0, .above);
-        var partial_buffer: [5]Corner = undefined;
-        try output.emitFan(arena, clipPolygon(positive, &partial_buffer, 1, .below));
-        var saturated_buffer: [5]Corner = undefined;
-        const saturated = clipPolygon(positive, &saturated_buffer, 1, .above);
-        for (saturated) |*corner| corner.value = 1;
-        try output.emitFan(arena, saturated);
-    }
-
-    fn emitFan(output: *Output, arena: Allocator, polygon: []Corner) error{OutOfMemory}!void {
-        if (polygon.len < 3) return;
-        for (1..polygon.len - 1) |index| {
-            const fan = [3]*Corner{ &polygon[0], &polygon[index], &polygon[index + 1] };
-            var pixels: [3][2]f64 = undefined;
-            for (&pixels, fan) |*pixel, corner| {
-                const point = output.pixelPoint(corner.position);
-                pixel.* = .{ point[0], point[1] };
-            }
-            const area = (pixels[1][0] - pixels[0][0]) * (pixels[2][1] - pixels[0][1]) - (pixels[1][1] - pixels[0][1]) * (pixels[2][0] - pixels[0][0]);
-            if (!(area > 0)) continue;
-            for (fan) |corner| try output.indices.append(arena, try output.cornerIndex(arena, corner.*));
-        }
-    }
-
-    fn cornerIndex(output: *Output, arena: Allocator, corner: Corner) error{OutOfMemory}!u32 {
-        const coverage: f32 = @floatCast(std.math.clamp(corner.value, 0, 1));
-        if (corner.vertex) |vertex| if (vertex.output_index) |index| if (output.coverages.items[index] == coverage) return index;
-        const index: u32 = @intCast(output.positions.items.len);
-        try output.positions.append(arena, output.pixelPoint(corner.position));
-        try output.coverages.append(arena, coverage);
-        if (corner.vertex) |vertex| vertex.output_index = index;
-        return index;
-    }
-
-    fn pixelPoint(output: *const Output, grid_position: [2]f64) Point {
-        const point: [2]f64 = if (output.rotated) .{ grid_position[1], -grid_position[0] } else grid_position;
-        return .{ @floatCast(point[0] / grid_per_pixel), @floatCast(point[1] / grid_per_pixel) };
     }
 
     fn indexOf(output: *Output, arena: Allocator, vertex: *Vertex) error{OutOfMemory}!u32 {
@@ -993,44 +923,28 @@ const Output = struct {
         const index: u32 = @intCast(output.positions.items.len);
         const point: GridPoint = if (output.rotated) .{ vertex.point[1], -vertex.point[0] } else vertex.point;
         try output.positions.append(arena, .{ gridToPixels(point[0]), gridToPixels(point[1]) });
-        try output.coverages.append(arena, 1);
+        try output.coverages.append(arena, std.math.clamp(vertex.coverage, 0, 1));
         vertex.output_index = index;
         return index;
     }
 };
 
-const coverage_steps = 1 << 16;
+/// Skia's rule: crossings on an inner edge stay fully covered, crossings of outer edges stay
+/// uncovered, others take the larger coverage interpolated along both edges.
+fn crossingCoverage(edge: *const Edge, other: *const Edge, point: GridPoint) f32 {
+    if (edge.kind == .inner or other.kind == .inner) return 1;
+    if (edge.kind == .outer and other.kind == .outer) return 0;
+    return @max(coverageAlong(edge.top.?, edge.bottom.?, point), coverageAlong(other.top.?, other.bottom.?, point));
+}
 
-const Corner = struct {
-    /// Null for points where a cut crosses an edge.
-    vertex: ?*Vertex,
-    position: [2]f64,
-    value: f64,
-};
-
-/// Sutherland-Hodgman: the part of the convex polygon with value at or above (below) `threshold`.
-fn clipPolygon(polygon: []const Corner, buffer: []Corner, threshold: f64, keep: enum { above, below }) []Corner {
-    assert(buffer.len >= polygon.len + 1);
-    var count: usize = 0;
-    for (polygon, 0..) |current, index| {
-        const next = polygon[(index + 1) % polygon.len];
-        const current_kept = if (keep == .above) current.value >= threshold else current.value <= threshold;
-        const next_kept = if (keep == .above) next.value >= threshold else next.value <= threshold;
-        if (current_kept) {
-            buffer[count] = current;
-            count += 1;
-        }
-        if (current_kept != next_kept and current.value != threshold and next.value != threshold) {
-            const t = (threshold - current.value) / (next.value - current.value);
-            buffer[count] = .{
-                .vertex = null,
-                .position = .{ current.position[0] + t * (next.position[0] - current.position[0]), current.position[1] + t * (next.position[1] - current.position[1]) },
-                .value = threshold,
-            };
-            count += 1;
-        }
-    }
-    return buffer[0..count];
+/// Coverage interpolated from `from` to `to` at the projection of `point`.
+pub fn coverageAlong(from: *const Vertex, to: *const Vertex, point: GridPoint) f32 {
+    const direction = [2]f64{ @floatFromInt(@as(i64, to.point[0]) - from.point[0]), @floatFromInt(@as(i64, to.point[1]) - from.point[1]) };
+    const offset = [2]f64{ @floatFromInt(@as(i64, point[0]) - from.point[0]), @floatFromInt(@as(i64, point[1]) - from.point[1]) };
+    const length_squared = direction[0] * direction[0] + direction[1] * direction[1];
+    if (length_squared == 0) return from.coverage;
+    const t = std.math.clamp((offset[0] * direction[0] + offset[1] * direction[1]) / length_squared, 0, 1);
+    return @floatCast(@as(f64, from.coverage) + t * (@as(f64, to.coverage) - from.coverage));
 }
 
 fn gridToPixels(coordinate: i32) f32 {
@@ -1085,7 +999,7 @@ fn bottomCollinear(left_or_null: ?*Edge, right_or_null: ?*Edge) bool {
 
 /// The crossing of two segments that share no vertex, snapped to the grid, or null if they are
 /// parallel or apart. Touching counts.
-fn segmentCrossing(edge: *const Edge, other: *const Edge) ?GridPoint {
+pub fn segmentCrossing(edge: *const Edge, other: *const Edge) ?GridPoint {
     const top = edge.top.?;
     const bottom = edge.bottom.?;
     const other_top = other.top.?;

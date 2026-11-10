@@ -1,9 +1,8 @@
 //! Anti-aliasing for the sweep tessellator, a port of Skia's GrAATriangulator onto the integer grid.
 //! The filled region's boundary is offset half a pixel inward (coverage 1) and outward
-//! (coverage 0). Coverage is the winding number of the inner rings plus the linear ramps between
-//! the rings, summed where ramps overlap and clamped to [0, 1]. For parallel edges closer than a
-//! pixel this is the exact box filtered coverage, where Skia collapses the overlap along its
-//! straight skeleton.
+//! (coverage 0), triangles between the rings interpolate coverage per vertex. Where the rings of
+//! close edges overlap, the overlap collapses along its straight skeleton as in Skia, and each
+//! collapsed vertex gets the summed coverage of the two ramps meeting there.
 //!
 //! Ported from Skia, src/gpu/ganesh/geometry/GrAATriangulator.{h,cpp}:
 //!
@@ -41,10 +40,12 @@ const InternalError = tessellation.InternalError;
 const Tessellator = tessellation.Tessellator;
 const Vertex = tessellation.Vertex;
 const Edge = tessellation.Edge;
+const EdgeKind = tessellation.EdgeKind;
 const VertexList = tessellation.VertexList;
 const EdgeList = tessellation.EdgeList;
 const Poly = tessellation.Poly;
-const LinearCoverage = tessellation.LinearCoverage;
+const sweepLessThan = tessellation.sweepLessThan;
+const coverageAlong = tessellation.coverageAlong;
 
 const grid_per_pixel: f64 = tessellation.grid_per_pixel;
 const ramp_half_width = 0.5 * grid_per_pixel;
@@ -52,32 +53,79 @@ const pointy_vertex_distance: i128 = tessellation.grid_per_pixel / 4;
 const max_grid_coordinate = 1 << 24;
 /// Directions between grid points stay below this, so squared dot and cross products fit in i128.
 const max_direction_component = 1 << 25;
-
-/// Ramps steeper than this per grid unit, narrower than 1/16 px, are dropped. Their gradients
-/// would cost the coverage sums their precision.
-const max_coverage_gradient = 16.0 / grid_per_pixel;
+/// Skia's miter angle, turns past about 166° pull the far corner back.
+const pull_back_cosine = 0.97;
+/// Skia's limit for bisectors at crossings, about 2.6°.
+const max_bisector_cosine = 0.999;
 
 /// Corner lifts fall to 0 within half a pixel diagonal of the boundary vertex.
 const corner_radius = 0.5 * std.math.sqrt2 * grid_per_pixel;
 const min_corner_correction = 1.0 / 32.0;
 
-/// `mesh` is simplified. The polys fill with the nonzero rule and carry their coverage relative to
-/// `origin`.
-pub fn tessellate(tessellator: *Tessellator, mesh: VertexList, origin: GridPoint, fill_rule: FillRule) InternalError!?*Poly {
-    var ramp_mesh: VertexList = .{};
+pub const Result = struct {
+    /// Filled with the nonzero rule.
+    polys: ?*Poly,
+    /// The ramps between the rings, when no rings overlap. Otherwise the polys contain them.
+    triangles: []const [3]*Vertex,
+};
+
+/// `mesh` is simplified.
+pub fn tessellate(tessellator: *Tessellator, mesh: VertexList, fill_rule: FillRule) InternalError!Result {
+    var inner_mesh: VertexList = .{};
+    var outer_mesh: VertexList = .{};
+    var rings: std.ArrayList([]const RingEntry) = .empty;
     try removeNonBoundaryEdges(tessellator, mesh, fill_rule);
     var vertex = mesh.head;
     while (vertex) |current| : (vertex = current.next) {
         while (current.first_edge_below) |edge| {
-            const boundary = try extractBoundary(tessellator, edge, fill_rule);
-            //try simplifyBoundary(tessellator, &boundary);
-            try strokeBoundary(tessellator, boundary, origin, &ramp_mesh);
+            var boundary = try extractBoundary(tessellator, edge, fill_rule);
+            try simplifyBoundary(tessellator, &boundary);
+            const ring = try strokeBoundary(tessellator, boundary, &inner_mesh, &outer_mesh);
+            if (ring.len > 0) try rings.append(tessellator.arena, ring);
         }
     }
-    try tessellator.sortMesh(&ramp_mesh);
-    _ = try tessellator.mergeCoincidentVertices(&ramp_mesh);
-    _ = try tessellator.simplify(&ramp_mesh);
-    return tessellator.tessellate(ramp_mesh);
+    try tessellator.sortMesh(&inner_mesh);
+    try tessellator.sortMesh(&outer_mesh);
+    _ = try tessellator.mergeCoincidentVertices(&inner_mesh);
+    var complex = try tessellator.mergeCoincidentVertices(&outer_mesh);
+    if (try tessellator.simplify(&inner_mesh)) complex = true;
+    if (try tessellator.simplify(&outer_mesh)) complex = true;
+    if (try collapseOverlapRegions(tessellator, &inner_mesh, .inner)) complex = true;
+    if (try collapseOverlapRegions(tessellator, &outer_mesh, .outer)) complex = true;
+    if (!complex) {
+        var triangles: std.ArrayList([3]*Vertex) = .empty;
+        for (rings.items) |ring| for (ring, 0..) |entry, index| {
+            try tessellator.charge();
+            try addRampSegment(tessellator, entry, ring[(index + 1) % ring.len], &triangles);
+        };
+        return .{ .polys = try tessellator.tessellate(inner_mesh), .triangles = triangles.items };
+    }
+    try connectPartners(tessellator, outer_mesh);
+    try connectPartners(tessellator, inner_mesh);
+    outer_mesh.appendList(inner_mesh);
+    try tessellator.sortMesh(&outer_mesh);
+    _ = try tessellator.mergeCoincidentVertices(&outer_mesh);
+    _ = try tessellator.simplify(&outer_mesh);
+    return .{ .polys = try tessellator.tessellate(outer_mesh), .triangles = &.{} };
+}
+
+/// Connects remaining ring partners with structural edges, so no triangle spans the ramp with
+/// coverage 0 at all corners.
+fn connectPartners(tessellator: *Tessellator, mesh: VertexList) InternalError!void {
+    var vertex = mesh.head;
+    while (vertex) |outer| : (vertex = outer.next) {
+        try tessellator.charge();
+        const inner = outer.partner orelse continue;
+        const target = inner.collapsed_into orelse inner;
+        if (!isListed(target) or !isListed(outer)) continue;
+        try tessellator.makeConnectingEdge(outer, target, .connector, 0);
+        inner.partner = null;
+        outer.partner = null;
+    }
+}
+
+fn isListed(vertex: *const Vertex) bool {
+    return vertex.prev != null or vertex.next != null;
 }
 
 fn antialiasDirection(from: GridPoint, to: GridPoint) [2]i64 {
@@ -128,9 +176,9 @@ fn offsetPoint(origin: GridPoint, offset: [2]f64) ?GridPoint {
     return point;
 }
 
-fn makeVertex(tessellator: *Tessellator, point: GridPoint) error{OutOfMemory}!*Vertex {
+fn makeVertex(tessellator: *Tessellator, point: GridPoint, coverage: f32) error{OutOfMemory}!*Vertex {
     const vertex = try tessellator.arena.create(Vertex);
-    vertex.* = .{ .point = point };
+    vertex.* = .{ .point = point, .coverage = coverage };
     return vertex;
 }
 
@@ -284,162 +332,83 @@ const Ramp = struct {
     inner: [2]GridPoint,
     outer: [2]GridPoint,
     count: usize,
-    /// The ramps' coverage at the boundary vertex.
-    vertex_coverage: f64,
 };
 
-/// One end of a ring segment, the boundary vertex lies halfway between the corners.
+/// Partnered ring corners, the boundary vertex lies between them.
 const RingEntry = struct {
-    inner: GridPoint,
-    outer: GridPoint,
+    inner: *Vertex,
+    outer: *Vertex,
     vertex: GridPoint,
-    /// Added to the segment's coverage of 0.5 at the vertex, falling to 0 within corner_radius.
+    /// Added to the ramp's coverage of 0.5 at the vertex, falling to 0 within corner_radius.
     lift: f64,
-    /// Second entry of a join with two, the segment from the first one stays inside the join.
-    continues_join: bool,
 };
 
-/// Offsets the boundary half a pixel to both sides and adds the ramps between the rings, with
-/// coverage 0 on the outer ring and 1 on the inner ring.
-fn strokeBoundary(tessellator: *Tessellator, boundary: Boundary, origin: GridPoint, ramp_mesh: *VertexList) InternalError!void {
-    const head = boundary.head orelse return;
-    if (head.next == null or head.next.?.next == null) return;
-    var prev_edge = boundary.tail.?;
+/// Offsets the boundary half a pixel to both sides into the ring meshes, inner corners with
+/// coverage 1 and outer corners with coverage 0. Returns the ring in boundary order.
+fn strokeBoundary(tessellator: *Tessellator, boundary: Boundary, inner_mesh: *VertexList, outer_mesh: *VertexList) InternalError![]const RingEntry {
+    const head = boundary.head orelse return &.{};
+    if (head.next == null or head.next.?.next == null) return &.{};
     var ring: std.ArrayList(RingEntry) = .empty;
+    var inner_inversion = true;
+    var outer_inversion = true;
+    var prev_edge = boundary.tail.?;
     var next_edge: ?*BoundaryEdge = head;
     while (next_edge) |edge| : ({
         next_edge = edge.next;
         prev_edge = edge;
     }) {
         try tessellator.charge();
-        const ramp = try joinRamp(prev_edge, edge) orelse continue;
-        const peak = cornerPeak(prev_edge, edge, ramp.vertex_coverage);
-        // Sharp joins stay uncorrected like in Skia and NanoVG, a correction there would cross both overlapping fans.
-        const corrected = ramp.count == 1 and @abs(peak) >= min_corner_correction;
-        const shorter_edge = @min(vectorLength(prev_edge.direction()), vectorLength(edge.direction()));
-        const lift = if (corrected) peak * @min(1, shorter_edge / (2 * corner_radius)) else 0;
-        for (ramp.inner[0..ramp.count], ramp.outer[0..ramp.count], 0..) |inner, outer, index| {
-            try ring.append(tessellator.arena, .{ .inner = inner, .outer = outer, .vertex = edge.from.point, .lift = lift, .continues_join = index == 1 });
+        const ramp = joinRamp(prev_edge, edge) orelse continue;
+        const lift = if (ramp.count == 1) cornerLift(prev_edge, edge) else 0;
+        for (ramp.inner[0..ramp.count], ramp.outer[0..ramp.count], 0..) |inner_point, outer_point, index| {
+            // A miter's corner on the side without the tangent is one vertex for both entries, a
+            // merge would make it synthetic and keep it out of the collapse.
+            const shared_inner = index == 1 and tessellation.pointsEqual(inner_point, ramp.inner[0]);
+            const shared_outer = index == 1 and tessellation.pointsEqual(outer_point, ramp.outer[0]);
+            const inner = if (shared_inner) ring.getLast().inner else try ringVertex(tessellator, inner_mesh, inner_point, 1);
+            const outer = if (shared_outer) ring.getLast().outer else try ringVertex(tessellator, outer_mesh, outer_point, 0);
+            if (!shared_inner) inner.partner = outer;
+            if (!shared_outer) outer.partner = inner;
+            if (index == 0 and ring.items.len > 0) {
+                const last = ring.getLast();
+                if (!runsAgainst(last.inner, inner, prev_edge)) inner_inversion = false;
+                if (!runsAgainst(last.outer, outer, prev_edge)) outer_inversion = false;
+            }
+            try ring.append(tessellator.arena, .{ .inner = inner, .outer = outer, .vertex = edge.from.point, .lift = lift });
         }
     }
     const count = ring.items.len;
+    if (count == 0) return &.{};
+    if (!runsAgainst(ring.getLast().inner, ring.items[0].inner, boundary.tail.?)) inner_inversion = false;
+    if (!runsAgainst(ring.getLast().outer, ring.items[0].outer, boundary.tail.?)) outer_inversion = false;
+    // Inner -2 and outer 1 fill the ramp with 1 and the interior with -1, or 3 where a thin part
+    // inverts. A wholly inverted ring flips them, so collapseOverlapRegions finds it.
+    const inner_winding: i32 = if (inner_inversion) 2 else -2;
+    const outer_winding: i32 = if (outer_inversion) -1 else 1;
     for (ring.items, 0..) |entry, index| {
         try tessellator.charge();
         const next = ring.items[(index + 1) % count];
-        if (next.continues_join) {
-            const outer = try meshVertex(tessellator, ramp_mesh, entry.outer);
-            const next_outer = try meshVertex(tessellator, ramp_mesh, next.outer);
-            const next_inner = try meshVertex(tessellator, ramp_mesh, next.inner);
-            const inner = try meshVertex(tessellator, ramp_mesh, entry.inner);
-            try addRampTriangle(tessellator, origin, .{ outer, next_outer, next_inner }, .{ 0, 0, 1 });
-            try addRampTriangle(tessellator, origin, .{ outer, next_inner, inner }, .{ 0, 1, 1 });
-        } else try addRampSegment(tessellator, origin, entry, next, ramp_mesh);
+        try tessellator.makeConnectingEdge(entry.inner, next.inner, .inner, inner_winding);
+        try tessellator.makeConnectingEdge(entry.outer, next.outer, .outer, outer_winding);
     }
+    return ring.items;
 }
 
-fn meshVertex(tessellator: *Tessellator, ramp_mesh: *VertexList, point: GridPoint) error{OutOfMemory}!*Vertex {
-    const vertex = try makeVertex(tessellator, point);
-    ramp_mesh.append(vertex);
+fn ringVertex(tessellator: *Tessellator, mesh: *VertexList, point: GridPoint, coverage: f32) error{OutOfMemory}!*Vertex {
+    const vertex = try makeVertex(tessellator, point, coverage);
+    mesh.append(vertex);
     return vertex;
 }
 
-/// The ramp between two joins. Lifted ends split it along the boundary into an outer and an inner
-/// strip, both fanned so the lift sits on the boundary vertex without new crossing edges.
-fn addRampSegment(tessellator: *Tessellator, origin: GridPoint, start: RingEntry, end: RingEntry, ramp_mesh: *VertexList) InternalError!void {
-    const outer_start = try meshVertex(tessellator, ramp_mesh, start.outer);
-    const outer_end = try meshVertex(tessellator, ramp_mesh, end.outer);
-    const inner_end = try meshVertex(tessellator, ramp_mesh, end.inner);
-    const inner_start = try meshVertex(tessellator, ramp_mesh, start.inner);
-    if (start.lift == 0 and end.lift == 0) {
-        try addRampTriangle(tessellator, origin, .{ outer_start, outer_end, inner_end }, .{ 0, 0, 1 });
-        try addRampTriangle(tessellator, origin, .{ outer_start, inner_end, inner_start }, .{ 0, 1, 1 });
-        return;
-    }
-    var midline: [4]*Vertex = undefined;
-    var values: [4]f64 = undefined;
-    var midline_count: usize = 0;
-    const length = vectorLength(antialiasDirection(start.vertex, end.vertex));
-    const room_for_falloff = length >= 2 * corner_radius;
-    if (start.lift != 0) {
-        midline[midline_count] = try meshVertex(tessellator, ramp_mesh, start.vertex);
-        values[midline_count] = 0.5 + start.lift;
-        midline_count += 1;
-        if (room_for_falloff) {
-            midline[midline_count] = try meshVertex(tessellator, ramp_mesh, try pointAlong(start.vertex, end.vertex, corner_radius / length));
-            values[midline_count] = 0.5;
-            midline_count += 1;
-        }
-    }
-    if (end.lift != 0) {
-        if (room_for_falloff) {
-            midline[midline_count] = try meshVertex(tessellator, ramp_mesh, try pointAlong(end.vertex, start.vertex, corner_radius / length));
-            values[midline_count] = 0.5;
-            midline_count += 1;
-        }
-        midline[midline_count] = try meshVertex(tessellator, ramp_mesh, end.vertex);
-        values[midline_count] = 0.5 + end.lift;
-        midline_count += 1;
-    }
-    assert(midline_count > 0);
-    const last = midline_count - 1;
-    if (start.lift == 0) try addRampTriangle(tessellator, origin, .{ outer_start, midline[0], inner_start }, .{ 0, values[0], 1 });
-    if (end.lift == 0) try addRampTriangle(tessellator, origin, .{ outer_end, inner_end, midline[last] }, .{ 0, 1, values[last] });
-    // The long triangles spanning the segment end on its last unlifted midline point.
-    const span_end = if (end.lift != 0 and last > 0) last - 1 else last;
-    try addRampTriangle(tessellator, origin, .{ outer_start, outer_end, midline[span_end] }, .{ 0, 0, values[span_end] });
-    try addRampTriangle(tessellator, origin, .{ inner_start, midline[span_end], inner_end }, .{ 1, values[span_end], 1 });
-    for (0..last) |index| {
-        const outer = if (index < span_end) outer_start else outer_end;
-        const inner = if (index < span_end) inner_start else inner_end;
-        try addRampTriangle(tessellator, origin, .{ outer, midline[index + 1], midline[index] }, .{ 0, values[index + 1], values[index] });
-        try addRampTriangle(tessellator, origin, .{ inner, midline[index], midline[index + 1] }, .{ 1, values[index], values[index + 1] });
-    }
+/// Skia's inversion test: the ring piece runs against the boundary edge in sweep order.
+fn runsAgainst(from: *const Vertex, to: *const Vertex, edge: *const BoundaryEdge) bool {
+    return sweepLessThan(from.point, to.point) != sweepLessThan(edge.from.point, edge.to.point);
 }
 
-/// `from` moved towards `to` by `fraction` of the way.
-fn pointAlong(from: GridPoint, to: GridPoint, fraction: f64) error{TooComplex}!GridPoint {
-    assert(fraction > 0 and fraction < 1);
-    const direction = relativePoint(from, to);
-    return offsetPoint(from, .{ direction[0] * fraction, direction[1] * fraction }) orelse error.TooComplex;
-}
-
-/// Adds the triangle's coverage, linear from 0 at outer to 1 at inner corners, as edges whose
-/// coverage steps sum to it. An edge between inner corners also steps by -1, the winding of the
-/// inner ring, which keeps the sum continuous. Winding counts the outer ring.
-fn addRampTriangle(tessellator: *Tessellator, origin: GridPoint, corners: [3]*Vertex, values: [3]f64) InternalError!void {
-    const coverage = rampCoverage(origin, corners, values);
-    for (corners, 0..) |from, index| {
-        const next = (index + 1) % 3;
-        const to = corners[next];
-        const inner_edge = values[index] == 1 and values[next] == 1;
-        if (coverage) |linear| {
-            const step = if (inner_edge) linear.plus(.{ .c = -1 }) else linear;
-            try tessellator.makeConnectingEdge(from, to, if (inner_edge) 0 else 1, step);
-        } else if (inner_edge) try tessellator.makeConnectingEdge(from, to, -1, .{ .c = -1 });
-    }
-}
-
-/// The linear function through the corners, null for flat or too steep triangles. The corners
-/// are taken in the given order, so the steps are right minus left for either orientation.
-fn rampCoverage(origin: GridPoint, corners: [3]*Vertex, values: [3]f64) ?LinearCoverage {
-    const first = corners[0].point;
-    const second = antialiasDirection(first, corners[1].point);
-    const third = antialiasDirection(first, corners[2].point);
-    const determinant = crossProduct(second, third);
-    if (determinant == 0) return null;
-    const second_rise = values[1] - values[0];
-    const third_rise = values[2] - values[0];
-    const denominator: f64 = @floatFromInt(determinant);
-    const a = (second_rise * @as(f64, @floatFromInt(third[1])) - third_rise * @as(f64, @floatFromInt(second[1]))) / denominator;
-    const b = (third_rise * @as(f64, @floatFromInt(second[0])) - second_rise * @as(f64, @floatFromInt(third[0]))) / denominator;
-    if (a * a + b * b > max_coverage_gradient * max_coverage_gradient) return null;
-    const relative = relativePoint(origin, first);
-    return .{ .a = a, .b = b, .c = values[0] - a * relative[0] - b * relative[1] };
-}
-
-/// Where the offset lines of two consecutive boundary edges meet, null where the boundary runs
-/// straight on. Points are built relative to the vertex in unit vectors and rounded once.
-fn joinRamp(prev_edge: *const BoundaryEdge, edge: *const BoundaryEdge) error{TooComplex}!?Ramp {
+/// Where the offset lines of two consecutive boundary edges meet. Null where the boundary runs
+/// straight on, turns back exactly, or a corner leaves the grid. Points are built relative to the
+/// vertex in unit vectors and rounded once.
+fn joinRamp(prev_edge: *const BoundaryEdge, edge: *const BoundaryEdge) ?Ramp {
     const vertex = edge.from.point;
     assert(prev_edge.to == edge.from);
     const incoming = prev_edge.direction();
@@ -450,31 +419,55 @@ fn joinRamp(prev_edge: *const BoundaryEdge, edge: *const BoundaryEdge) error{Too
     // Unit normals towards the fill.
     const incoming_normal = [2]f64{ incoming_unit[1], -incoming_unit[0] };
     const outgoing_normal = [2]f64{ outgoing_unit[1], -outgoing_unit[0] };
+    const normal_sum = [2]f64{ incoming_normal[0] + outgoing_normal[0], incoming_normal[1] + outgoing_normal[1] };
+    const cosine = dotFloat(incoming_unit, outgoing_unit);
     if (dotProduct(incoming, outgoing) > 0) {
-        const cosine = dotFloat(incoming_unit, outgoing_unit);
-        const scale = ramp_half_width / (1 + cosine);
-        const offset = [2]f64{ (incoming_normal[0] + outgoing_normal[0]) * scale, (incoming_normal[1] + outgoing_normal[1]) * scale };
-        const inner = offsetPoint(vertex, offset) orelse return error.TooComplex;
-        const outer = offsetPoint(vertex, .{ -offset[0], -offset[1] }) orelse return error.TooComplex;
-        return .{ .inner = .{ inner, inner }, .outer = .{ outer, outer }, .count = 1, .vertex_coverage = 0.5 };
+        const offset = scaled(normal_sum, ramp_half_width / (1 + cosine));
+        const inner = offsetPoint(vertex, offset) orelse return null;
+        const outer = offsetPoint(vertex, scaled(offset, -1)) orelse return null;
+        return .{ .inner = .{ inner, inner }, .outer = .{ outer, outer }, .count = 1 };
     }
-    // Turns of 90° and more: both ramps run on to the line through the vertex along the sum of the
-    // directions. Their coverages add up to 1 on it, before it they overlap and sum as for two
-    // close edges. The inner corner of one ramp is the outer corner of the other.
-    const offset: [2]f64 = if (crossProduct(incoming, outgoing) == 0)
-        .{ ramp_half_width * incoming_normal[0], ramp_half_width * incoming_normal[1] }
-    else offset: {
-        const scale = ramp_half_width / dotFloat(incoming_normal, outgoing_unit);
-        break :offset .{ (incoming_unit[0] + outgoing_unit[0]) * scale, (incoming_unit[1] + outgoing_unit[1]) * scale };
-    };
-    const inner = offsetPoint(vertex, offset) orelse return error.TooComplex;
-    const outer = offsetPoint(vertex, .{ -offset[0], -offset[1] }) orelse return error.TooComplex;
-    const concave = crossProduct(incoming, outgoing) > 0;
-    return .{ .inner = .{ inner, outer }, .outer = .{ outer, inner }, .count = 2, .vertex_coverage = if (concave) 1 else 0 };
+    const cross = crossProduct(incoming, outgoing);
+    if (cross == 0) return null;
+    const sum_length = std.math.hypot(normal_sum[0], normal_sum[1]);
+    if (!(sum_length > 0)) return null;
+    // Mitered from 90° on. The convex side's corners lie on the tangent half a pixel past the
+    // vertex, the other side's corner where the offset lines meet. Past Skia's miter angle that
+    // corner is pulled back along the bisector to the perpendiculars through the neighbors.
+    const bisector = scaled(normal_sum, 1 / sum_length);
+    const concave = cross > 0;
+    const tangent_distance: f64 = if (concave) ramp_half_width else -ramp_half_width;
+    const first_offset = solveLines(bisector, tangent_distance, incoming_normal, tangent_distance) orelse return null;
+    const second_offset = solveLines(bisector, tangent_distance, outgoing_normal, tangent_distance) orelse return null;
+    const direction = scaled(bisector, if (concave) -1 else 1);
+    var distance = ramp_half_width * sum_length / (1 + cosine);
+    if (cosine < -pull_back_cosine) {
+        const incoming_projection = dotFloat(incoming_unit, direction);
+        if (incoming_projection < 0) distance = @min(distance, vectorLength(incoming) / -incoming_projection);
+        const outgoing_projection = dotFloat(outgoing_unit, direction);
+        if (outgoing_projection > 0) distance = @min(distance, vectorLength(outgoing) / outgoing_projection);
+    }
+    const opposite = offsetPoint(vertex, scaled(direction, distance)) orelse return null;
+    const first = offsetPoint(vertex, first_offset) orelse return null;
+    const second = offsetPoint(vertex, second_offset) orelse return null;
+    if (concave) return .{ .inner = .{ first, second }, .outer = .{ opposite, opposite }, .count = 2 };
+    return .{ .inner = .{ opposite, opposite }, .outer = .{ first, second }, .count = 2 };
 }
 
-/// What lifts the ramps' coverage at a corner to α/2π, α the interior angle.
-fn cornerPeak(prev_edge: *const BoundaryEdge, edge: *const BoundaryEdge, vertex_coverage: f64) f64 {
+/// The point q with normal · q = distance and other_normal · q = other_distance, null if the
+/// lines are parallel.
+fn solveLines(normal: [2]f64, distance: f64, other_normal: [2]f64, other_distance: f64) ?[2]f64 {
+    const determinant = normal[0] * other_normal[1] - normal[1] * other_normal[0];
+    if (determinant == 0) return null;
+    return .{
+        (distance * other_normal[1] - other_distance * normal[1]) / determinant,
+        (normal[0] * other_distance - other_normal[0] * distance) / determinant,
+    };
+}
+
+/// What lifts the ramps' coverage of 0.5 at a flat corner to α/2π, α the interior angle, scaled
+/// down where the shorter edge leaves no room for the falloff.
+fn cornerLift(prev_edge: *const BoundaryEdge, edge: *const BoundaryEdge) f64 {
     const incoming_direction = prev_edge.direction();
     const outgoing_direction = edge.direction();
     const incoming = unit(incoming_direction);
@@ -482,9 +475,319 @@ fn cornerPeak(prev_edge: *const BoundaryEdge, edge: *const BoundaryEdge, vertex_
     const turn = std.math.atan2(@abs(incoming[0] * outgoing[1] - incoming[1] * outgoing[0]), dotFloat(incoming, outgoing));
     const concave = crossProduct(incoming_direction, outgoing_direction) > 0;
     const interior_angle = if (concave) std.math.pi + turn else std.math.pi - turn;
-    return interior_angle / (2 * std.math.pi) - vertex_coverage;
+    const peak = interior_angle / (2 * std.math.pi) - 0.5;
+    if (@abs(peak) < min_corner_correction) return 0;
+    const shorter_edge = @min(vectorLength(incoming_direction), vectorLength(outgoing_direction));
+    return peak * @min(1, shorter_edge / (2 * corner_radius));
+}
+
+/// The ramp between two ring entries. Lifted ends split it along the boundary into an outer and
+/// an inner strip, both fanned so the lift sits on the boundary vertex.
+fn addRampSegment(tessellator: *Tessellator, start: RingEntry, end: RingEntry, triangles: *std.ArrayList([3]*Vertex)) InternalError!void {
+    const arena = tessellator.arena;
+    const outer_start = start.outer;
+    const outer_end = end.outer;
+    const inner_start = start.inner;
+    const inner_end = end.inner;
+    if (start.lift == 0 and end.lift == 0) {
+        try triangles.append(arena, .{ outer_start, outer_end, inner_end });
+        try triangles.append(arena, .{ outer_start, inner_end, inner_start });
+        return;
+    }
+    var midline: [4]*Vertex = undefined;
+    var midline_count: usize = 0;
+    const length = vectorLength(antialiasDirection(start.vertex, end.vertex));
+    const room_for_falloff = length >= 2 * corner_radius;
+    if (start.lift != 0) {
+        midline[midline_count] = try makeVertex(tessellator, start.vertex, @floatCast(0.5 + start.lift));
+        midline_count += 1;
+        if (room_for_falloff) {
+            midline[midline_count] = try makeVertex(tessellator, try pointAlong(start.vertex, end.vertex, corner_radius / length), 0.5);
+            midline_count += 1;
+        }
+    }
+    if (end.lift != 0) {
+        if (room_for_falloff) {
+            midline[midline_count] = try makeVertex(tessellator, try pointAlong(end.vertex, start.vertex, corner_radius / length), 0.5);
+            midline_count += 1;
+        }
+        midline[midline_count] = try makeVertex(tessellator, end.vertex, @floatCast(0.5 + end.lift));
+        midline_count += 1;
+    }
+    assert(midline_count > 0);
+    const last = midline_count - 1;
+    if (start.lift == 0) try triangles.append(arena, .{ outer_start, midline[0], inner_start });
+    if (end.lift == 0) try triangles.append(arena, .{ outer_end, inner_end, midline[last] });
+    // The long triangles spanning the segment end on its last unlifted midline point.
+    const span_end = if (end.lift != 0 and last > 0) last - 1 else last;
+    try triangles.append(arena, .{ outer_start, outer_end, midline[span_end] });
+    try triangles.append(arena, .{ inner_start, midline[span_end], inner_end });
+    for (0..last) |index| {
+        const outer = if (index < span_end) outer_start else outer_end;
+        const inner = if (index < span_end) inner_start else inner_end;
+        try triangles.append(arena, .{ outer, midline[index + 1], midline[index] });
+        try triangles.append(arena, .{ inner, midline[index], midline[index + 1] });
+    }
+}
+
+/// `from` moved towards `to` by `fraction` of the way.
+fn pointAlong(from: GridPoint, to: GridPoint, fraction: f64) error{TooComplex}!GridPoint {
+    assert(fraction > 0 and fraction < 1);
+    return offsetPoint(from, scaled(relativePoint(from, to), fraction)) orelse error.TooComplex;
+}
+
+/// Gives the crossing `vertex` of two ring edges a partner where the lines one pixel off both
+/// edges meet, with coverage 1 behind outer and 0 behind inner edges. Nearly parallel edges get none.
+pub fn computeBisector(tessellator: *Tessellator, edge: *const Edge, other: *const Edge, vertex: *Vertex) InternalError!void {
+    if (!edge.isAlive() or !other.isAlive()) return;
+    const direction = unit(antialiasDirection(edge.top.?.point, edge.bottom.?.point));
+    const other_direction = unit(antialiasDirection(other.top.?.point, other.bottom.?.point));
+    if (dotFloat(direction, other_direction) > max_bisector_cosine) return;
+    const normal = [2]f64{ direction[1], -direction[0] };
+    const other_normal = [2]f64{ other_direction[1], -other_direction[0] };
+    const side: f64 = if (edge.winding > 0) grid_per_pixel else -grid_per_pixel;
+    const other_side: f64 = if (other.winding > 0) grid_per_pixel else -grid_per_pixel;
+    const distance = side - dotFloat(normal, relativePoint(edge.top.?.point, vertex.point));
+    const other_distance = other_side - dotFloat(other_normal, relativePoint(other.top.?.point, vertex.point));
+    const offset = solveLines(normal, distance, other_normal, other_distance) orelse return;
+    const point = offsetPoint(vertex.point, offset) orelse return;
+    vertex.partner = try makeVertex(tessellator, point, if (edge.kind == .outer) 1 else 0);
+}
+
+/// Skia's test for edges between a region where rings overlap and one where they do not.
+fn isOverlapEdge(edge: *const Edge) bool {
+    return switch (edge.kind) {
+        .outer => edge.winding != 0 and edge.winding != 1,
+        .inner => edge.winding != 0 and edge.winding != -2,
+        .connector => false,
+    };
+}
+
+/// Finds the edges around overlapping rings in a ring mesh and collapses each overlap along its
+/// straight skeleton. True if there was any.
+fn collapseOverlapRegions(tessellator: *Tessellator, mesh: *VertexList, ring: EdgeKind) InternalError!bool {
+    assert(ring != .connector);
+    var skeleton: Skeleton = .{ .tessellator = tessellator, .mesh = mesh, .ring = ring, .events = .initContext(ring) };
+    var active: EdgeList = .{};
+    var vertex = mesh.head;
+    while (vertex) |current| : (vertex = current.next) {
+        if (!current.isConnected()) continue;
+        const enclosing = try tessellator.findEnclosingEdges(current, &active);
+        var above = current.last_edge_above;
+        while (above) |edge| {
+            if (edge == enclosing[0]) break;
+            try tessellator.charge();
+            const prev = edge.prev_edge_above orelse enclosing[0];
+            assert(active.remove(edge));
+            const left_overlap = if (prev) |left| isOverlapEdge(left) else false;
+            const right_overlap = isOverlapEdge(edge);
+            const outer_boundary = edge.kind == .outer and (prev == null or prev.?.winding == 0 or edge.winding == 0);
+            if (prev) |left| edge.winding -= left.winding;
+            if (left_overlap and right_overlap) {
+                edge.disconnect();
+            } else if (left_overlap or right_overlap) {
+                try skeleton.addEdge(edge);
+                if (outer_boundary) {
+                    // Collinear merges sum windings, the fill needs the outer ring's scale back.
+                    edge.winding = if (edge.winding < 0) -1 else 1;
+                } else edge.disconnect();
+            }
+            above = prev;
+        }
+        var prev = enclosing[0];
+        var below = current.first_edge_below;
+        while (below) |edge| : (below = edge.next_edge_below) {
+            try tessellator.charge();
+            if (prev) |left| edge.winding += left.winding;
+            assert(active.insertAfter(edge, prev));
+            prev = edge;
+        }
+    }
+    while (skeleton.events.pop()) |event| {
+        try tessellator.charge();
+        try skeleton.applyEvent(event);
+    }
+    // Unlike Skia's ring edges, connectors give crossings on them interpolated coverage.
+    for (skeleton.edges.items) |skeleton_edge| if (skeleton_edge.edge != null) {
+        try tessellator.makeConnectingEdge(skeleton_edge.prev.vertex, skeleton_edge.next.vertex, .connector, 0);
+    };
+    return skeleton.edges.items.len > 0;
+}
+
+const SkeletonVertex = struct {
+    vertex: *Vertex,
+    prev: ?*SkeletonEdge = null,
+    next: ?*SkeletonEdge = null,
+};
+
+const SkeletonEdge = struct {
+    /// The overlap edge, null once collapsed.
+    edge: ?*Edge,
+    event: ?*CollapseEvent = null,
+    prev: *SkeletonVertex,
+    next: *SkeletonVertex,
+};
+
+const CollapseEvent = struct {
+    /// Null once a neighbor's collapse replaced the event.
+    skeleton_edge: ?*SkeletonEdge,
+    point: GridPoint,
+    coverage: f32,
+    priority: f32,
+    /// The skeleton edge's ends when the event was made, they break ties.
+    ends: [2]GridPoint,
+};
+
+/// Inner rings collapse higher coverage first, outer rings lower coverage first, as in Skia.
+/// Ties go by sweep order, so the order is total.
+fn eventOrder(ring: EdgeKind, event: *CollapseEvent, other: *CollapseEvent) std.math.Order {
+    if (event.priority != other.priority) {
+        const first = if (ring == .inner) event.priority > other.priority else event.priority < other.priority;
+        return if (first) .lt else .gt;
+    }
+    const pairs = [_][2]GridPoint{ .{ event.point, other.point }, .{ event.ends[0], other.ends[0] }, .{ event.ends[1], other.ends[1] } };
+    for (pairs) |pair| {
+        if (sweepLessThan(pair[0], pair[1])) return .lt;
+        if (sweepLessThan(pair[1], pair[0])) return .gt;
+    }
+    return .eq;
+}
+
+const Skeleton = struct {
+    tessellator: *Tessellator,
+    mesh: *VertexList,
+    ring: EdgeKind,
+    events: std.PriorityQueue(*CollapseEvent, EdgeKind, eventOrder),
+    vertices: std.AutoHashMapUnmanaged(*Vertex, *SkeletonVertex) = .empty,
+    edges: std.ArrayList(*SkeletonEdge) = .empty,
+
+    fn vertexFor(skeleton: *Skeleton, vertex: *Vertex) error{OutOfMemory}!*SkeletonVertex {
+        const arena = skeleton.tessellator.arena;
+        const entry = try skeleton.vertices.getOrPut(arena, vertex);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = try arena.create(SkeletonVertex);
+            entry.value_ptr.*.* = .{ .vertex = vertex };
+        }
+        return entry.value_ptr.*;
+    }
+
+    fn addEdge(skeleton: *Skeleton, edge: *Edge) InternalError!void {
+        const arena = skeleton.tessellator.arena;
+        const prev = try skeleton.vertexFor(if (edge.winding < 0) edge.bottom.? else edge.top.?);
+        const next = try skeleton.vertexFor(if (edge.winding < 0) edge.top.? else edge.bottom.?);
+        const skeleton_edge = try arena.create(SkeletonEdge);
+        skeleton_edge.* = .{ .edge = edge, .prev = prev, .next = next };
+        try skeleton.edges.append(arena, skeleton_edge);
+        prev.next = skeleton_edge;
+        next.prev = skeleton_edge;
+        try skeleton.makeEvent(skeleton_edge);
+    }
+
+    /// Where the bisectors at both ends of the skeleton edge meet. Inner ramps sum there, outer
+    /// ramps take the larger value, which stays on the ramp of each edge where only one reaches.
+    fn makeEvent(skeleton: *Skeleton, skeleton_edge: *SkeletonEdge) InternalError!void {
+        const prev = skeleton_edge.prev.vertex;
+        const next = skeleton_edge.next.vertex;
+        if (prev == next) return;
+        const prev_partner = prev.partner orelse return;
+        const next_partner = next.partner orelse return;
+        const bisector = bisectorEdge(prev, prev_partner) orelse return;
+        const other_bisector = bisectorEdge(next, next_partner) orelse return;
+        const point = tessellation.segmentCrossing(&bisector, &other_bisector) orelse return;
+        const coverage = coverageAlong(prev, prev_partner, point);
+        const other_coverage = coverageAlong(next, next_partner, point);
+        const larger = @max(coverage, other_coverage);
+        const collapsed = if (skeleton.ring == .inner) std.math.clamp(coverage + other_coverage - 1, 0, 1) else larger;
+        try skeleton.pushEvent(skeleton_edge, point, collapsed, larger);
+    }
+
+    /// Where the bisector at `vertex` meets the line through `destination` parallel to the
+    /// skeleton edge, within the edge's sweep range.
+    fn makeEventAlong(skeleton: *Skeleton, skeleton_edge: *SkeletonEdge, vertex: *Vertex, destination: *Vertex) InternalError!void {
+        const partner = vertex.partner orelse return;
+        const edge = skeleton_edge.edge orelse return;
+        if (!edge.isAlive()) return;
+        const top = edge.top.?.point;
+        const bottom = edge.bottom.?.point;
+        const parallel_end: GridPoint = .{ destination.point[0] + (bottom[0] - top[0]), destination.point[1] + (bottom[1] - top[1]) };
+        const crossing = tessellation.lineCrossing(.{ destination.point, parallel_end }, .{ vertex.point, partner.point }) orelse return;
+        for (crossing) |coordinate| if (@abs(coordinate) > max_grid_coordinate) return;
+        const point: GridPoint = .{ @intCast(crossing[0]), @intCast(crossing[1]) };
+        if (sweepLessThan(point, top) or !sweepLessThan(point, bottom)) return;
+        try skeleton.pushEvent(skeleton_edge, point, destination.coverage, destination.coverage);
+    }
+
+    fn pushEvent(skeleton: *Skeleton, skeleton_edge: *SkeletonEdge, point: GridPoint, coverage: f32, priority: f32) InternalError!void {
+        assert(!std.math.isNan(priority));
+        const arena = skeleton.tessellator.arena;
+        const event = try arena.create(CollapseEvent);
+        const ends = [2]GridPoint{ skeleton_edge.prev.vertex.point, skeleton_edge.next.vertex.point };
+        event.* = .{ .skeleton_edge = skeleton_edge, .point = point, .coverage = coverage, .priority = priority, .ends = ends };
+        skeleton_edge.event = event;
+        try skeleton.events.push(arena, event);
+    }
+
+    /// Collapses the skeleton edge into one vertex and makes events for its neighbors.
+    fn applyEvent(skeleton: *Skeleton, event: *CollapseEvent) InternalError!void {
+        const skeleton_edge = event.skeleton_edge orelse return;
+        assert(skeleton_edge.event == event);
+        if (skeleton_edge.edge == null) return;
+        const prev = skeleton_edge.prev.vertex;
+        const next = skeleton_edge.next.vertex;
+        const prev_edge = skeleton_edge.prev.prev orelse return;
+        const next_edge = skeleton_edge.next.next orelse return;
+        if (prev_edge.edge == null or next_edge.edge == null) return;
+        const tessellator = skeleton.tessellator;
+        const destination = try tessellator.makeSortedVertex(event.point, skeleton.mesh, prev, event.coverage);
+        destination.synthetic = true;
+        const joined = try tessellator.arena.create(SkeletonVertex);
+        joined.* = .{ .vertex = destination, .prev = prev_edge, .next = next_edge };
+        skeleton_edge.edge = null;
+        try skeleton.connect(prev, destination);
+        try skeleton.connect(next, destination);
+        prev_edge.next = joined;
+        next_edge.prev = joined;
+        if (prev_edge.event) |stale| stale.skeleton_edge = null;
+        if (next_edge.event) |stale| stale.skeleton_edge = null;
+        if (prev_edge.prev == next_edge.next) {
+            try skeleton.connect(prev_edge.prev.vertex, destination);
+            prev_edge.edge = null;
+            next_edge.edge = null;
+            return;
+        }
+        try computeBisector(tessellator, prev_edge.edge.?, next_edge.edge.?, destination);
+        if (destination.partner != null) {
+            try skeleton.makeEvent(prev_edge);
+            try skeleton.makeEvent(next_edge);
+        } else {
+            try skeleton.makeEventAlong(prev_edge, prev_edge.prev.vertex, destination);
+            try skeleton.makeEventAlong(next_edge, next_edge.next.vertex, destination);
+        }
+    }
+
+    fn connect(skeleton: *Skeleton, vertex: *Vertex, destination: *Vertex) InternalError!void {
+        if (vertex == destination) return;
+        if (vertex.synthetic) return skeleton.tessellator.makeConnectingEdge(vertex, destination, .connector, 0);
+        const partner = vertex.partner orelse return;
+        partner.partner = destination;
+        vertex.partner = null;
+        vertex.collapsed_into = destination;
+    }
+};
+
+/// A temporary edge from a vertex to its partner, null if they coincide.
+fn bisectorEdge(vertex: *Vertex, partner: *Vertex) ?Edge {
+    if (tessellation.pointsEqual(vertex.point, partner.point)) return null;
+    const downward = sweepLessThan(vertex.point, partner.point);
+    const top = if (downward) vertex else partner;
+    const bottom = if (downward) partner else vertex;
+    return .{ .winding = 1, .kind = .connector, .top = top, .bottom = bottom, .line = .{ top.point, bottom.point } };
 }
 
 fn dotFloat(a: [2]f64, b: [2]f64) f64 {
     return a[0] * b[0] + a[1] * b[1];
+}
+
+fn scaled(vector: [2]f64, factor: f64) [2]f64 {
+    return .{ vector[0] * factor, vector[1] * factor };
 }
