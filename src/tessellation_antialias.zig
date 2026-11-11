@@ -71,7 +71,7 @@ pub fn tessellate(tessellator: *Tessellator, mesh: VertexList, fill_rule: FillRu
     var inner_mesh: VertexList = .{};
     var outer_mesh: VertexList = .{};
     var rings: std.ArrayList([]const RingEntry) = .empty;
-    var collapsed_ring = false;
+    var complex_ring = false;
     try removeNonBoundaryEdges(tessellator, mesh, fill_rule);
     try markPinchVertices(tessellator, mesh);
     var vertex = mesh.head;
@@ -79,14 +79,14 @@ pub fn tessellate(tessellator: *Tessellator, mesh: VertexList, fill_rule: FillRu
         while (current.first_edge_below) |edge| {
             var boundary = try extractBoundary(tessellator, edge, fill_rule);
             try simplifyBoundary(tessellator, &boundary);
-            const ring = try strokeBoundary(tessellator, boundary, &inner_mesh, &outer_mesh, &collapsed_ring);
+            const ring = try strokeBoundary(tessellator, boundary, &inner_mesh, &outer_mesh, &complex_ring);
             if (ring.len > 0) try rings.append(tessellator.arena, ring);
         }
     }
     try tessellator.sortMesh(&inner_mesh);
     try tessellator.sortMesh(&outer_mesh);
     _ = try tessellator.mergeCoincidentVertices(&inner_mesh);
-    var complex = try tessellator.mergeCoincidentVertices(&outer_mesh) or collapsed_ring;
+    var complex = try tessellator.mergeCoincidentVertices(&outer_mesh) or complex_ring;
     if (try tessellator.simplify(&inner_mesh)) complex = true;
     if (try tessellator.simplify(&outer_mesh)) complex = true;
     if (try collapseOverlapRegions(tessellator, &inner_mesh, .inner)) complex = true;
@@ -377,7 +377,7 @@ const RingEntry = struct {
 /// Offsets the boundary half a pixel to both sides into the ring meshes, inner corners with
 /// coverage 1 and outer corners with coverage 0. Returns the ring in boundary order. A wholly
 /// inverted inner ring becomes one vertex at the centroid, which keeps the ink of the fill.
-fn strokeBoundary(tessellator: *Tessellator, boundary: Boundary, inner_mesh: *VertexList, outer_mesh: *VertexList, collapsed_ring: *bool) InternalError![]const RingEntry {
+fn strokeBoundary(tessellator: *Tessellator, boundary: Boundary, inner_mesh: *VertexList, outer_mesh: *VertexList, complex_ring: *bool) InternalError![]const RingEntry {
     const head = boundary.head orelse return &.{};
     if (head.next == null or head.next.?.next == null) return &.{};
     var ring: std.ArrayList(RingEntry) = .empty;
@@ -427,7 +427,7 @@ fn strokeBoundary(tessellator: *Tessellator, boundary: Boundary, inner_mesh: *Ve
                 try tessellator.charge();
                 try tessellator.makeConnectingEdge(entry.outer, ring.items[(index + 1) % count].outer, .outer, outer_winding);
             }
-            collapsed_ring.* = true;
+            complex_ring.* = true;
         }
         return &.{};
     }
@@ -439,6 +439,8 @@ fn strokeBoundary(tessellator: *Tessellator, boundary: Boundary, inner_mesh: *Ve
     for (ring.items, 0..) |entry, index| {
         try tessellator.charge();
         const next = ring.items[(index + 1) % count];
+        // A ring piece running against its partner piece twists the ramp into a bowtie.
+        if (dotProduct(antialiasDirection(entry.inner.point, next.inner.point), antialiasDirection(entry.outer.point, next.outer.point)) < 0) complex_ring.* = true;
         try tessellator.makeConnectingEdge(entry.inner, next.inner, .inner, inner_winding);
         try tessellator.makeConnectingEdge(entry.outer, next.outer, .outer, outer_winding);
     }
