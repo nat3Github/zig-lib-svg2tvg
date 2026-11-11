@@ -433,8 +433,8 @@ fn strokeBoundary(tessellator: *Tessellator, boundary: Boundary, inner_mesh: *Ve
     }
     inner_mesh.appendList(inner_vertices);
     // Inner -2 and outer 1 fill the ramp with 1 and the interior with -1, or 3 where a thin part
-    // inverts. A wholly inverted ring flips them, so collapseOverlapRegions finds it.
-    const inner_winding: i32 = if (inner_inversion) 2 else -2;
+    // inverts. A wholly inverted outer ring flips, so collapseOverlapRegions finds it.
+    const inner_winding: i32 = -2;
     const outer_winding: i32 = if (outer_inversion) -1 else 1;
     for (ring.items, 0..) |entry, index| {
         try tessellator.charge();
