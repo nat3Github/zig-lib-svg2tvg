@@ -418,7 +418,7 @@ fn strokeBoundary(tessellator: *Tessellator, boundary: Boundary, inner_mesh: *Ve
     if (count == 0) return &.{};
     if (!runsAgainst(last_unpulled[0], first_unpulled[0], boundary.tail.?)) inner_inversion = false;
     if (!runsAgainst(last_unpulled[1], first_unpulled[1], boundary.tail.?)) outer_inversion = false;
-    if (inner_inversion and hasRoundingArea(ring.items)) {
+    if (inner_inversion) {
         if (try ringCentroid(tessellator, boundary, ring.items)) |center| {
             outer_mesh.append(center);
             for (ring.items) |entry| entry.inner.collapsed_into = center;
@@ -472,17 +472,6 @@ fn ringCentroid(tessellator: *Tessellator, boundary: Boundary, ring: []const Rin
     const area: f64 = @floatFromInt(boundary_area);
     const coverage = std.math.clamp(3 * @abs(area) / @abs(@as(f64, @floatFromInt(outer_area))), 0, 1);
     return try makeVertex(tessellator, point, @floatCast(coverage));
-}
-
-fn hasRoundingArea(ring: []const RingEntry) bool {
-    var doubled_area: i128 = 0;
-    var perimeter: f64 = 0;
-    for (ring, 0..) |entry, index| {
-        const next = ring[(index + 1) % ring.len].inner.point;
-        doubled_area += tessellation.orientation(.{ 0, 0 }, entry.inner.point, next);
-        perimeter += vectorLength(antialiasDirection(entry.inner.point, next));
-    }
-    return @as(f64, @floatFromInt(@abs(doubled_area))) <= 2 * perimeter;
 }
 
 fn ringVertex(tessellator: *Tessellator, mesh: *VertexList, point: GridPoint, coverage: f32) error{OutOfMemory}!*Vertex {
