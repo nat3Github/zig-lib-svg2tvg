@@ -945,7 +945,7 @@ fn crossingCoverage(edge: *const Edge, other: *const Edge, point: GridPoint) f32
 }
 
 /// Coverage interpolated from `from` to `to` at the projection of `point`.
-pub fn coverageAlong(from: *const Vertex, to: *const Vertex, point: GridPoint) f32 {
+fn coverageAlong(from: *const Vertex, to: *const Vertex, point: GridPoint) f32 {
     const direction = [2]f64{ @floatFromInt(@as(i64, to.point[0]) - from.point[0]), @floatFromInt(@as(i64, to.point[1]) - from.point[1]) };
     const offset = [2]f64{ @floatFromInt(@as(i64, point[0]) - from.point[0]), @floatFromInt(@as(i64, point[1]) - from.point[1]) };
     const length_squared = direction[0] * direction[0] + direction[1] * direction[1];
@@ -1006,7 +1006,7 @@ fn bottomCollinear(left_or_null: ?*Edge, right_or_null: ?*Edge) bool {
 
 /// The crossing of two segments that share no vertex, snapped to the grid, or null if they are
 /// parallel or apart. Touching counts.
-pub fn segmentCrossing(edge: *const Edge, other: *const Edge) ?GridPoint {
+fn segmentCrossing(edge: *const Edge, other: *const Edge) ?GridPoint {
     const top = edge.top.?;
     const bottom = edge.bottom.?;
     const other_top = other.top.?;

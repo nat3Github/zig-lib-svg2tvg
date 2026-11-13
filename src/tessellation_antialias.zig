@@ -39,7 +39,6 @@ const VertexList = tessellation.VertexList;
 const EdgeList = tessellation.EdgeList;
 const Poly = tessellation.Poly;
 const sweepLessThan = tessellation.sweepLessThan;
-const coverageAlong = tessellation.coverageAlong;
 
 const grid_per_pixel: f64 = tessellation.grid_per_pixel;
 const ramp_half_width = 0.5 * grid_per_pixel;
@@ -644,19 +643,45 @@ fn pointAlong(from: GridPoint, to: GridPoint, fraction: f64) error{TooComplex}!G
 /// Gives the crossing `vertex` of two ring edges a partner where the lines one pixel off both
 /// edges meet, with coverage 1 behind outer and 0 behind inner edges. Nearly parallel edges get none.
 pub fn computeBisector(tessellator: *Tessellator, edge: *const Edge, other: *const Edge, vertex: *Vertex) InternalError!void {
-    if (!edge.isAlive() or !other.isAlive()) return;
+    if (try bisectorPartner(tessellator, edge, other, vertex)) |partner| vertex.partner = partner;
+}
+
+fn bisectorPartner(tessellator: *Tessellator, edge: *const Edge, other: *const Edge, vertex: *const Vertex) InternalError!?*Vertex {
+    const offset = bisectorOffset(edge, other, vertex.point) orelse return null;
+    const point = offsetPoint(vertex.point, offset) orelse return null;
+    return try makeVertex(tessellator, point, if (edge.kind == .outer) 1 else 0);
+}
+
+/// From `point` to where the lines one pixel off both edges meet, null for nearly parallel edges.
+fn bisectorOffset(edge: *const Edge, other: *const Edge, point: GridPoint) ?[2]f64 {
+    if (!edge.isAlive() or !other.isAlive()) return null;
     const direction = unit(antialiasDirection(edge.top.?.point, edge.bottom.?.point));
     const other_direction = unit(antialiasDirection(other.top.?.point, other.bottom.?.point));
-    if (dotFloat(direction, other_direction) > max_bisector_cosine) return;
+    if (dotFloat(direction, other_direction) > max_bisector_cosine) return null;
     const normal = [2]f64{ direction[1], -direction[0] };
     const other_normal = [2]f64{ other_direction[1], -other_direction[0] };
     const side: f64 = if (edge.winding > 0) grid_per_pixel else -grid_per_pixel;
     const other_side: f64 = if (other.winding > 0) grid_per_pixel else -grid_per_pixel;
-    const distance = side - dotFloat(normal, relativePoint(edge.top.?.point, vertex.point));
-    const other_distance = other_side - dotFloat(other_normal, relativePoint(other.top.?.point, vertex.point));
-    const offset = solveLines(normal, distance, other_normal, other_distance) orelse return;
-    const point = offsetPoint(vertex.point, offset) orelse return;
-    vertex.partner = try makeVertex(tessellator, point, if (edge.kind == .outer) 1 else 0);
+    const distance = side - dotFloat(normal, relativePoint(edge.top.?.point, point));
+    const other_distance = other_side - dotFloat(other_normal, relativePoint(other.top.?.point, point));
+    return solveLines(normal, distance, other_normal, other_distance);
+}
+
+/// Signed distance in pixels from the line through the edge, positive on the side its bisector
+/// partners lie, so the edge's front sits at the distance it has moved.
+fn frontDistance(edge: *const Edge, origin: GridPoint, offset: [2]f64) f64 {
+    const top = edge.top.?.point;
+    const direction = unit(antialiasDirection(top, edge.bottom.?.point));
+    const normal = [2]f64{ direction[1], -direction[0] };
+    const side: f64 = if (edge.winding > 0) 1 else -1;
+    const from_top = relativePoint(top, origin);
+    return side * dotFloat(normal, .{ from_top[0] + offset[0], from_top[1] + offset[1] }) / grid_per_pixel;
+}
+
+/// The skeleton edge's direction from its prev to its next vertex.
+fn skeletonDirection(edge: *const Edge) [2]f64 {
+    const direction = unit(antialiasDirection(edge.top.?.point, edge.bottom.?.point));
+    return if (edge.winding < 0) scaled(direction, -1) else direction;
 }
 
 /// Skia's test for edges between a region where rings overlap and one where they do not.
@@ -708,6 +733,7 @@ fn collapseOverlapRegions(tessellator: *Tessellator, mesh: *VertexList, ring: Ed
             prev = edge;
         }
     }
+    for (skeleton.edges.items) |skeleton_edge| try skeleton.makeEvent(skeleton_edge);
     while (skeleton.events.pop()) |event| {
         try tessellator.charge();
         try skeleton.applyEvent(event);
@@ -721,6 +747,8 @@ fn collapseOverlapRegions(tessellator: *Tessellator, mesh: *VertexList, ring: Ed
 
 const SkeletonVertex = struct {
     vertex: *Vertex,
+    /// Where the bisector ends, one pixel off the lines of both neighboring edges.
+    partner: ?*Vertex,
     prev: ?*SkeletonEdge = null,
     next: ?*SkeletonEdge = null,
 };
@@ -771,7 +799,7 @@ const Skeleton = struct {
         const entry = try skeleton.vertices.getOrPut(arena, vertex);
         if (!entry.found_existing) {
             entry.value_ptr.* = try arena.create(SkeletonVertex);
-            entry.value_ptr.*.* = .{ .vertex = vertex };
+            entry.value_ptr.*.* = .{ .vertex = vertex, .partner = vertex.partner };
         }
         return entry.value_ptr.*;
     }
@@ -785,37 +813,52 @@ const Skeleton = struct {
         try skeleton.edges.append(arena, skeleton_edge);
         prev.next = skeleton_edge;
         next.prev = skeleton_edge;
-        try skeleton.makeEvent(skeleton_edge);
     }
 
-    /// Where the bisectors at both ends of the skeleton edge meet. Inner ramps sum there, outer
-    /// ramps take the larger value, which stays on the ramp of each edge where only one reaches.
+    /// When the fronts at both ends of the skeleton edge meet, moving in step on exact bisectors.
     fn makeEvent(skeleton: *Skeleton, skeleton_edge: *SkeletonEdge) InternalError!void {
-        const prev = skeleton_edge.prev.vertex;
-        const next = skeleton_edge.next.vertex;
-        if (prev == next) return;
-        const prev_partner = prev.partner orelse return;
-        const next_partner = next.partner orelse return;
-        const bisector = bisectorEdge(prev, prev_partner) orelse return;
-        const other_bisector = bisectorEdge(next, next_partner) orelse return;
-        const point = tessellation.segmentCrossing(&bisector, &other_bisector) orelse return;
-        const coverage = coverageAlong(prev, prev_partner, point);
-        const other_coverage = coverageAlong(next, next_partner, point);
-        const larger = @max(coverage, other_coverage);
-        const collapsed = if (skeleton.ring == .inner) std.math.clamp(coverage + other_coverage - 1, 0, 1) else larger;
-        try skeleton.pushEvent(skeleton_edge, point, collapsed, larger);
+        if (skeleton_edge.prev.vertex == skeleton_edge.next.vertex) return;
+        const edge = skeleton_edge.edge orelse return;
+        const direction = skeletonDirection(edge);
+        const start_now = frontPoint(skeleton_edge.prev, edge, 0) orelse return;
+        const end_now = frontPoint(skeleton_edge.next, edge, 0) orelse return;
+        const start_later = frontPoint(skeleton_edge.prev, edge, 1) orelse return;
+        const end_later = frontPoint(skeleton_edge.next, edge, 1) orelse return;
+        const length_now = dotFloat(direction, .{ end_now[0] - start_now[0], end_now[1] - start_now[1] });
+        const length_later = dotFloat(direction, .{ end_later[0] - start_later[0], end_later[1] - start_later[1] });
+        if (!(length_later < length_now)) return;
+        const earliest = @max(frontDistance(edge, skeleton_edge.prev.vertex.point, .{ 0, 0 }), frontDistance(edge, skeleton_edge.next.vertex.point, .{ 0, 0 }));
+        const time = @max(earliest, length_now / (length_now - length_later));
+        if (!(time <= 1)) return;
+        const start = frontPoint(skeleton_edge.prev, edge, time).?;
+        const end = frontPoint(skeleton_edge.next, edge, time).?;
+        const middle = [2]f64{ (start[0] + end[0]) / 2, (start[1] + end[1]) / 2 };
+        const point = offsetPoint(edge.top.?.point, middle) orelse return;
+        const coverage = skeleton.rampCoverage(time);
+        try skeleton.pushEvent(skeleton_edge, point, skeleton.collapsedCoverage(coverage, coverage), @floatCast(coverage));
+    }
+
+    /// One ring's ramp coverage on a front that moved `time` pixels from its ring.
+    fn rampCoverage(skeleton: *const Skeleton, time: f64) f64 {
+        const clamped = std.math.clamp(time, 0, 1);
+        return if (skeleton.ring == .inner) 1 - clamped else clamped;
+    }
+
+    fn collapsedCoverage(skeleton: *const Skeleton, coverage: f64, other_coverage: f64) f32 {
+        const collapsed = if (skeleton.ring == .inner) std.math.clamp(coverage + other_coverage - 1, 0, 1) else @max(coverage, other_coverage);
+        return @floatCast(collapsed);
     }
 
     /// Where the bisector at `vertex` meets the line through `destination` parallel to the
     /// skeleton edge, within the edge's sweep range.
-    fn makeEventAlong(skeleton: *Skeleton, skeleton_edge: *SkeletonEdge, vertex: *Vertex, destination: *Vertex) InternalError!void {
+    fn makeEventAlong(skeleton: *Skeleton, skeleton_edge: *SkeletonEdge, vertex: *SkeletonVertex, destination: *Vertex) InternalError!void {
         const partner = vertex.partner orelse return;
         const edge = skeleton_edge.edge orelse return;
         if (!edge.isAlive()) return;
         const top = edge.top.?.point;
         const bottom = edge.bottom.?.point;
         const parallel_end: GridPoint = .{ destination.point[0] + (bottom[0] - top[0]), destination.point[1] + (bottom[1] - top[1]) };
-        const crossing = tessellation.lineCrossing(.{ destination.point, parallel_end }, .{ vertex.point, partner.point }) orelse return;
+        const crossing = tessellation.lineCrossing(.{ destination.point, parallel_end }, .{ vertex.vertex.point, partner.point }) orelse return;
         for (crossing) |coordinate| if (@abs(coordinate) > max_grid_coordinate) return;
         const point: GridPoint = .{ @intCast(crossing[0]), @intCast(crossing[1]) };
         if (sweepLessThan(point, top) or !sweepLessThan(point, bottom)) return;
@@ -832,6 +875,20 @@ const Skeleton = struct {
         try skeleton.events.push(arena, event);
     }
 
+    /// Where the end `vertex` of `edge` sits on its bisector once the edge's front moved `time`
+    /// pixels, relative to the edge's top.
+    fn frontPoint(vertex: *const SkeletonVertex, edge: *const Edge, time: f64) ?[2]f64 {
+        const incoming = (vertex.prev orelse return null).edge orelse return null;
+        const outgoing = (vertex.next orelse return null).edge orelse return null;
+        const point = vertex.vertex.point;
+        const start = relativePoint(edge.top.?.point, point);
+        const start_time = frontDistance(edge, point, .{ 0, 0 });
+        const bisector = bisectorOffset(incoming, outgoing, point) orelse return start;
+        if (!(start_time < 1)) return start;
+        const fraction = (time - start_time) / (1 - start_time);
+        return .{ start[0] + fraction * bisector[0], start[1] + fraction * bisector[1] };
+    }
+
     /// Collapses the skeleton edge into one vertex and makes events for its neighbors.
     fn applyEvent(skeleton: *Skeleton, event: *CollapseEvent) InternalError!void {
         const skeleton_edge = event.skeleton_edge orelse return;
@@ -846,7 +903,7 @@ const Skeleton = struct {
         const destination = try tessellator.makeSortedVertex(event.point, skeleton.mesh, prev, event.coverage);
         destination.synthetic = true;
         const joined = try tessellator.arena.create(SkeletonVertex);
-        joined.* = .{ .vertex = destination, .prev = prev_edge, .next = next_edge };
+        joined.* = .{ .vertex = destination, .partner = null, .prev = prev_edge, .next = next_edge };
         skeleton_edge.edge = null;
         try skeleton.connect(prev, destination);
         try skeleton.connect(next, destination);
@@ -860,13 +917,13 @@ const Skeleton = struct {
             next_edge.edge = null;
             return;
         }
-        try computeBisector(tessellator, prev_edge.edge.?, next_edge.edge.?, destination);
-        if (destination.partner != null) {
+        joined.partner = try bisectorPartner(tessellator, prev_edge.edge.?, next_edge.edge.?, destination);
+        if (joined.partner != null) {
             try skeleton.makeEvent(prev_edge);
             try skeleton.makeEvent(next_edge);
         } else {
-            try skeleton.makeEventAlong(prev_edge, prev_edge.prev.vertex, destination);
-            try skeleton.makeEventAlong(next_edge, next_edge.next.vertex, destination);
+            try skeleton.makeEventAlong(prev_edge, prev_edge.prev, destination);
+            try skeleton.makeEventAlong(next_edge, next_edge.next, destination);
         }
     }
 
@@ -879,15 +936,6 @@ const Skeleton = struct {
         vertex.collapsed_into = destination;
     }
 };
-
-/// A temporary edge from a vertex to its partner, null if they coincide.
-fn bisectorEdge(vertex: *Vertex, partner: *Vertex) ?Edge {
-    if (tessellation.pointsEqual(vertex.point, partner.point)) return null;
-    const downward = sweepLessThan(vertex.point, partner.point);
-    const top = if (downward) vertex else partner;
-    const bottom = if (downward) partner else vertex;
-    return .{ .winding = 1, .kind = .connector, .top = top, .bottom = bottom, .line = .{ top.point, bottom.point } };
-}
 
 fn dotFloat(a: [2]f64, b: [2]f64) f64 {
     return a[0] * b[0] + a[1] * b[1];
