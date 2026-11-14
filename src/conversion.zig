@@ -9,7 +9,6 @@ const utils = ut.utils;
 const ColorHash = ut.ColorHash;
 const Stack = ut.Stack;
 const NodeMaker = ut.NodeMaker;
-const ColMap = ut.ColMap;
 const svg_ut = @import("svg-util.zig");
 const arrangement = @import("tessellation").arrangement;
 const SvgColor = svg_ut.SvgColor;
@@ -693,66 +692,94 @@ default_color: SvgColor = .{ .col = Color{
     .b = 0.0,
     .a = 1.0,
 } },
-color_table: []const Color = &.{},
-pub fn get_col(
-    self: *const @This(),
-    color: Color,
-) !u32 {
-    for (self.color_table, 0..) |c, i| {
-        if (std.meta.eql(c, color)) return math.cast(u32, i) orelse return error.ColorOOB;
+scale: Scale = .@"1/4096",
+
+const DrawCommand = tvg.parsing.DrawCommand;
+
+/// Kept until the whole SVG is read, because the TVG header and color table come first.
+const Recorder = struct {
+    allocator: Allocator,
+    commands: std.ArrayList(DrawCommand) = .empty,
+    colors: std.array_hash_map.Auto(ColorHash, void) = .empty,
+
+    fn colorStyle(self: *Recorder, color: Color) !Style {
+        const entry = try self.colors.getOrPut(self.allocator, .fromColor(color));
+        return .{ .flat = math.cast(u32, entry.index) orelse return error.ColorOOB };
     }
-    return error.ColorNotFound;
-}
+
+    fn dupeSegments(self: *Recorder, segments: []const Segment) ![]Segment {
+        const copies = try self.allocator.dupe(Segment, segments);
+        for (copies) |*copy| copy.commands = try self.allocator.dupe(Node, copy.commands);
+        return copies;
+    }
+};
+
+/// outline_fill_path stores its segment count in 6 bits.
+const outline_fill_max_segments = 64;
 
 pub fn write_path(
     self: *const @This(),
     arena_alloc: Allocator,
-    builder: anytype,
+    recorder: *Recorder,
     pathlist: []Segment,
     stack: *const Stack(InheritableProperties),
 ) !void {
     const stroke_width = (stack.top().?.@"stroke-width" orelse self.default_stroke_width) * self.svg.lengthScale();
     const fill = try InheritableProperties.resolve_color_property(stack, "fill");
     const stroke = try InheritableProperties.resolve_color_property(stack, "stroke");
-    // for (stack.data[0..stack.posplus1]) |el| {
-    //     std.log.warn("se: {?}", .{el.fill});
-    // }
-    if (fill) |col| {
-        const col_idx = try self.get_col(col);
-        // std.log.warn("fill: {}", .{col});
-        // std.log.warn("coll index: {}", .{col_idx});
-        const fill_segments = switch (stack.top().?.@"fill-rule" orelse .nonzero) {
+    var fill_segments: []const Segment = &.{};
+    if (fill != null) {
+        fill_segments = switch (stack.top().?.@"fill-rule" orelse .nonzero) {
             .evenodd => pathlist,
             .nonzero => try self.even_odd_segments_for_nonzero(arena_alloc, pathlist),
         };
-        if (debug_write_path) std.log.warn("writeFillPath: {any}", .{fill_segments});
-        if (fill_segments.len > 0) try builder.writeFillPath(.{ .flat = col_idx }, fill_segments);
     }
-    if (stroke) |col| {
-        for (pathlist) |*seg| {
-            const node_dup = try arena_alloc.alloc(Node, seg.commands.len);
-            for (seg.commands, node_dup) |n, *nd| {
-                nd.* = n;
-                switch (n) {
-                    .line => nd.line.line_width = stroke_width,
-                    .horiz => nd.horiz.line_width = stroke_width,
-                    .vert => nd.vert.line_width = stroke_width,
-                    .bezier => nd.bezier.line_width = stroke_width,
-                    .arc_circle => nd.arc_circle.line_width = stroke_width,
-                    .arc_ellipse => nd.arc_ellipse.line_width = stroke_width,
-                    .close => nd.close.line_width = stroke_width,
-                    .quadratic_bezier => nd.quadratic_bezier.line_width = stroke_width,
-                }
-            }
-            seg.commands = node_dup;
-        }
+    const fill_style: ?Style = if (fill != null and fill_segments.len > 0) try recorder.colorStyle(fill.?) else null;
+    const line_style: ?Style = if (stroke) |col| try recorder.colorStyle(col) else null;
+    const same_geometry = fill_segments.ptr == pathlist.ptr and fill_segments.len == pathlist.len;
+    if (fill_style != null and line_style != null and same_geometry and pathlist.len <= outline_fill_max_segments) {
+        try recorder.commands.append(recorder.allocator, .{ .outline_fill_path = .{
+            .fill_style = fill_style.?,
+            .line_style = line_style.?,
+            .line_width = stroke_width,
+            .path = .{ .segments = try recorder.dupeSegments(pathlist) },
+        } });
+        return;
+    }
+    if (fill_style) |style| {
+        if (debug_write_path) std.log.warn("writeFillPath: {any}", .{fill_segments});
+        try recorder.commands.append(recorder.allocator, .{ .fill_path = .{ .style = style, .path = .{ .segments = try recorder.dupeSegments(fill_segments) } } });
+    }
+    if (line_style) |style| {
         if (debug_write_path) std.log.warn("writeDrawPath: {any}", .{pathlist});
-        const col_idx = try self.get_col(col);
-        try builder.writeDrawPath(.{ .flat = col_idx }, stroke_width, pathlist);
+        try recorder.commands.append(recorder.allocator, .{ .draw_line_path = .{ .style = style, .line_width = stroke_width, .path = .{ .segments = try recorder.dupeSegments(pathlist) } } });
     }
 }
 
-const tvg_scale: Scale = .@"1/4096";
+/// Units per pixel: the largest power of two whose unit is at least 1/4096 of the larger image
+/// side, so the precision relative to the image is the same at every image size.
+fn scaleForImage(width: f32, height: f32) Scale {
+    const larger_side = @max(width, height);
+    assert(std.math.isFinite(larger_side) and larger_side > 0);
+    const unit_exponent = std.math.frexp(larger_side / 4096).exponent - 1;
+    return @fromBackingInt(@intCast(std.math.clamp(-unit_exponent, 0, 15)));
+}
+
+fn encode(gpa: Allocator, width: u32, height: u32, scale: Scale, range: Range, colors: []const Color, commands: []const DrawCommand) ![]const u8 {
+    var writer: std.Io.Writer.Allocating = .init(gpa);
+    defer writer.deinit();
+    var builder = tvg.builder.create(&writer.writer);
+    try builder.writeHeader(width, height, scale, .u8888, range);
+    try builder.writeColorTable(colors);
+    for (commands) |command| switch (command) {
+        .fill_path => |data| try builder.writeFillPath(data.style, data.path.segments),
+        .draw_line_path => |data| try builder.writeDrawPath(data.style, data.line_width, data.path.segments),
+        .outline_fill_path => |data| try builder.writeOutlineFillPath(data.fill_style, data.line_style, data.line_width, data.path.segments),
+        else => unreachable,
+    };
+    try builder.writeEndOfFile();
+    return writer.toOwnedSlice();
+}
 
 /// TinyVG fills every path even-odd. Returns segments whose even-odd fill is the nonzero fill of
 /// `pathlist`: the path itself if both rules agree, without the contours between two filled
@@ -762,7 +789,7 @@ fn even_odd_segments_for_nonzero(self: *const @This(), arena_alloc: Allocator, p
     // spanning the image about 100 segments, as many as the reference renderer draws.
     const tolerance = @max(self.svg.width.?, self.svg.height.?) / 4096;
     const limits: arrangement.Limits = .{};
-    const contours = try arrangement.flattenSegments(arena_alloc, pathlist, tvg_scale, tolerance, limits.max_edges);
+    const contours = try arrangement.flattenSegments(arena_alloc, pathlist, self.scale, tolerance, limits.max_edges);
     assert(contours.count() == pathlist.len);
     const regions = try arrangement.Arrangement.init(arena_alloc, contours, limits);
     if (regions.fillRulesAgree()) return pathlist;
@@ -786,7 +813,7 @@ fn even_odd_segments_for_nonzero(self: *const @This(), arena_alloc: Allocator, p
     }
 
     const boundary = try regions.boundary(arena_alloc, .nonzero);
-    const grid_per_pixel: f32 = @floatFromInt(tvg_scale.getScaleFactor());
+    const grid_per_pixel: f32 = @floatFromInt(self.scale.getScaleFactor());
     const segments = try arena_alloc.alloc(Segment, boundary.count());
     for (segments, 0..) |*segment, contour_index| {
         const points = boundary.get(contour_index);
@@ -799,7 +826,7 @@ fn even_odd_segments_for_nonzero(self: *const @This(), arena_alloc: Allocator, p
     return segments;
 }
 
-pub fn parse_colors_and_svg(popts: *const @This(), gpa: Allocator, svg_bytes: []const u8) !struct { []const Color, Svg } {
+pub fn parse_svg(gpa: Allocator, svg_bytes: []const u8) !Svg {
     // xml.Reader.Streaming.init asserts a reader buffer of at least 2 bytes.
     if (svg_bytes.len < 2) return error.InvalidSvg;
     var arena = std.heap.ArenaAllocator.init(gpa);
@@ -811,11 +838,6 @@ pub fn parse_colors_and_svg(popts: *const @This(), gpa: Allocator, svg_bytes: []
     defer readerImpl.deinit();
     var reader = &readerImpl.interface;
 
-    var colormap: ColMap = .empty;
-
-    var colortable_len: u32 = 0;
-    try colormap.put(alloc, .fromColor(popts.default_color.col), colortable_len);
-    colortable_len += 1;
     var svg = Svg{};
 
     while (true) {
@@ -842,50 +864,23 @@ pub fn parse_colors_and_svg(popts: *const @This(), gpa: Allocator, svg_bytes: []
                     }
                     try svg.parse(alloc, att_names, att_vals);
                 }
-                for (0..att_count) |i| {
-                    const att_name = reader.attributeNameNs(i).local;
-                    const att_val = try reader.attributeValue(i);
-                    inline for (ColorProperties) |p| {
-                        const c = try utils.parseColor(p, att_name, att_val);
-                        if (c) |col| {
-                            const maybe_key = ColorHash.get_hash_key(&col);
-                            if (maybe_key) |key| {
-                                if (colormap.getKey(key) == null) {
-                                    try colormap.put(alloc, key, colortable_len);
-                                    colortable_len += 1;
-                                }
-                            }
-                        }
-                    }
-                }
             },
             else => {},
             .eof => break,
         }
     }
     try svg.check();
-    const colors_hash = colormap.keys();
-    const colors = try gpa.alloc(Color, colors_hash.len);
-
-    if (debug) std.log.warn("colortable: RGBA", .{});
-    for (colors, colors_hash, 0..) |*v, v2, i| {
-        const c = v2.toColor();
-        v.* = c;
-        if (debug) std.log.warn("- {} | [{d:.1} {d:.1} {d:.1} {d:.1}]", .{ i, c.r, c.g, c.b, c.a });
-    }
-    return .{ colors, svg };
+    return svg;
 }
 
 pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]const u8 {
     var popts = opts;
-    const colors, const svg = try parse_colors_and_svg(&popts, gpa, svg_bytes);
-    defer gpa.free(colors);
-    popts.color_table = colors;
+    const svg = try parse_svg(gpa, svg_bytes);
     popts.svg = svg;
-    var writer: std.Io.Writer.Allocating = .init(gpa);
-    defer writer.deinit();
-
-    var builder = tvg.builder.create(&writer.writer);
+    popts.scale = scaleForImage(svg.width.?, svg.height.?);
+    var recorded = std.heap.ArenaAllocator.init(gpa);
+    defer recorded.deinit();
+    var recorder: Recorder = .{ .allocator = recorded.allocator() };
 
     assert(svg_bytes.len >= 2);
     var in: std.Io.Reader = .fixed(svg_bytes);
@@ -895,10 +890,6 @@ pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]con
 
     const sw: u32 = @intFromFloat(@max(1, @round(svg.width.?)));
     const sh: u32 = @intFromFloat(@max(1, @round(svg.height.?)));
-    try builder.writeHeader(sw, sh, tvg_scale, .u8888, Range.enhanced);
-
-    try builder.writeColorTable(colors);
-
     var stack = try Stack(InheritableProperties).init(gpa, popts.xml_max_nesting, InheritableProperties{});
     defer stack.deinit(gpa);
 
@@ -967,21 +958,21 @@ pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]con
                         try element.parse(&maker, att_names, att_vals);
                         top_mut.override_from(element);
                         if (try maker.segments()) |segs| {
-                            try write_path(&popts, garbage_alloc, &builder, segs, &stack);
+                            try write_path(&popts, garbage_alloc, &recorder, segs, &stack);
                         }
                     } else if (std.mem.eql(u8, "circle", element_tag)) {
                         var element = Circle{};
                         try element.parse(&maker, att_names, att_vals);
                         top_mut.override_from(element);
                         if (try maker.segments()) |segs| {
-                            try write_path(&popts, garbage_alloc, &builder, segs, &stack);
+                            try write_path(&popts, garbage_alloc, &recorder, segs, &stack);
                         }
                     } else if (std.mem.eql(u8, "ellipse", element_tag)) {
                         var element = Ellipse{};
                         try element.parse(&maker, att_names, att_vals);
                         top_mut.override_from(element);
                         if (try maker.segments()) |segs| {
-                            try write_path(&popts, garbage_alloc, &builder, segs, &stack);
+                            try write_path(&popts, garbage_alloc, &recorder, segs, &stack);
                         }
                     } else if (std.mem.eql(u8, "line", element_tag)) {
                         var element = Line{};
@@ -989,21 +980,21 @@ pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]con
                         top_mut.override_from(element);
                         top_mut.fill = .none;
                         if (try maker.segments()) |segs| {
-                            try write_path(&popts, garbage_alloc, &builder, segs, &stack);
+                            try write_path(&popts, garbage_alloc, &recorder, segs, &stack);
                         }
                     } else if (std.mem.eql(u8, "polyline", element_tag)) {
                         var element = PolyLine{};
                         try element.parse(&maker, garbage_alloc, att_names, att_vals);
                         top_mut.override_from(element);
                         if (try maker.segments()) |segs| {
-                            try write_path(&popts, garbage_alloc, &builder, segs, &stack);
+                            try write_path(&popts, garbage_alloc, &recorder, segs, &stack);
                         }
                     } else if (std.mem.eql(u8, "polygon", element_tag)) {
                         var element = Polygon{};
                         try element.parse(&maker, garbage_alloc, att_names, att_vals);
                         top_mut.override_from(element);
                         if (try maker.segments()) |segs| {
-                            try write_path(&popts, garbage_alloc, &builder, segs, &stack);
+                            try write_path(&popts, garbage_alloc, &recorder, segs, &stack);
                         }
                     } else if (std.mem.eql(u8, "path", element_tag)) {
                         var element = SvgPath{};
@@ -1011,7 +1002,7 @@ pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]con
                         top_mut.override_from(element);
 
                         if (try maker.segments()) |segs| {
-                            try write_path(&popts, garbage_alloc, &builder, segs, &stack);
+                            try write_path(&popts, garbage_alloc, &recorder, segs, &stack);
                             if (debug) log_seg(segs);
                         } else std.log.debug("no segments", .{});
                     } else {
@@ -1027,8 +1018,12 @@ pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]con
             .eof => break,
         }
     }
-    try builder.writeEndOfFile();
-    return writer.toOwnedSlice();
+    const colors = try recorded.allocator().alloc(Color, recorder.colors.count());
+    for (colors, recorder.colors.keys()) |*color, key| color.* = key.toColor();
+    return encode(gpa, sw, sh, popts.scale, .default, colors, recorder.commands.items) catch |err| switch (err) {
+        error.OutOfRange => encode(gpa, sw, sh, popts.scale, .enhanced, colors, recorder.commands.items),
+        else => |other| other,
+    };
 }
 fn log_seg(segs: []const Segment) void {
     std.log.warn("PRINT SEG BEGIN", .{});

@@ -414,13 +414,15 @@ pub const make_node = struct {
         if (make_node_debug2) std.log.warn("make_node: elliptical_arc", .{});
         // SVG omits an arc whose end is its start.
         if (rx == 0 or ry == 0 or std.meta.eql(addPoints(self.cur, p, rel), self.cur)) return self.line(lw, p, rel);
+        if (@abs(rx) == @abs(ry)) return self.circular_arc(lw, rx, large_arc, sweep_ccw, p, rel);
         self.cur = addPoints(self.cur, p, rel);
         self.reset_last_control();
+        // An ellipse turned by 180 degrees is the same ellipse, a small angle fits the 16 bit range.
         return Node{ .arc_ellipse = NodeData(Node.ArcEllipse){
             .data = Node.ArcEllipse{
                 .radius_x = @abs(rx) * self.vw.lengthScale(),
                 .radius_y = @abs(ry) * self.vw.lengthScale(),
-                .rotation = rotation,
+                .rotation = rotation - 180 * @round(rotation / 180),
                 .large_arc = large_arc,
                 .sweep = !sweep_ccw,
                 .target = self.vw.transform(self.cur),
