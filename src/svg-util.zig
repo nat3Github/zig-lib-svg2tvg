@@ -119,13 +119,13 @@ pub const SvgColor = union(SvgColorTag) {
 
     pub fn parseColor(val: []const u8) SvgColor {
         const trimmed = std.mem.trim(u8, val, " ");
-        if (std.mem.eql(u8, trimmed, "none")) {
+        if (std.ascii.eqlIgnoreCase(trimmed, "none")) {
             return none;
         }
-        if (std.mem.eql(u8, trimmed, "inherit")) {
+        if (std.ascii.eqlIgnoreCase(trimmed, "inherit")) {
             return inherit;
         }
-        if (std.mem.eql(u8, trimmed, "currentColor")) {
+        if (std.ascii.eqlIgnoreCase(trimmed, "currentColor")) {
             return currentColor;
         }
         const parsed = svg_parsing.Color.parse(val).color;

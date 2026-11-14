@@ -1068,7 +1068,7 @@ pub const Color = struct {
             if (parseHex(&parser)) |parsed| {
                 color = parsed;
             }
-        } else if (parser.data.len >= 4 and mem.eql(u8, parser.data[0..4], "rgb(")) {
+        } else if (parser.data.len >= 4 and std.ascii.eqlIgnoreCase(parser.data[0..4], "rgb(")) {
             if (parseIntPercent(&parser)) |parsed| {
                 color = parsed;
             }
@@ -1137,7 +1137,7 @@ pub const Color = struct {
     /// Parses a decimal-based color value, e.g., "rgb(1, 2, 3)", at the
     /// current position of the passed in Parser.
     fn parseIntPercent(parser: *Parser) ?Color {
-        if (parser.data.len < 4 or !mem.eql(u8, parser.data[0..4], "rgb(")) {
+        if (parser.data.len < 4 or !std.ascii.eqlIgnoreCase(parser.data[0..4], "rgb(")) {
             parser.setErr(.rgb_paren, 0, 0, 0);
             return null;
         }
@@ -1218,299 +1218,299 @@ pub const Color = struct {
     fn parseName(name: []const u8) ?Color {
         // Color sources taken from W3C wiki:
         // https://www.w3.org/wiki/CSS/Properties/color/keywords
-        if (mem.eql(u8, name, "aliceblue")) {
+        if (std.ascii.eqlIgnoreCase(name, "aliceblue")) {
             return .{ .r = 240, .g = 248, .b = 255 };
-        } else if (mem.eql(u8, name, "antiquewhite")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "antiquewhite")) {
             return .{ .r = 250, .g = 235, .b = 215 };
-        } else if (mem.eql(u8, name, "aqua")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "aqua")) {
             return .{ .r = 0, .g = 255, .b = 255 };
-        } else if (mem.eql(u8, name, "aquamarine")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "aquamarine")) {
             return .{ .r = 127, .g = 255, .b = 212 };
-        } else if (mem.eql(u8, name, "azure")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "azure")) {
             return .{ .r = 240, .g = 255, .b = 255 };
-        } else if (mem.eql(u8, name, "beige")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "beige")) {
             return .{ .r = 245, .g = 245, .b = 220 };
-        } else if (mem.eql(u8, name, "bisque")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "bisque")) {
             return .{ .r = 255, .g = 228, .b = 196 };
-        } else if (mem.eql(u8, name, "black")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "black")) {
             return .{ .r = 0, .g = 0, .b = 0 };
-        } else if (mem.eql(u8, name, "blanchedalmond")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "blanchedalmond")) {
             return .{ .r = 255, .g = 235, .b = 205 };
-        } else if (mem.eql(u8, name, "blue")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "blue")) {
             return .{ .r = 0, .g = 0, .b = 255 };
-        } else if (mem.eql(u8, name, "blueviolet")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "blueviolet")) {
             return .{ .r = 138, .g = 43, .b = 226 };
-        } else if (mem.eql(u8, name, "brown")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "brown")) {
             return .{ .r = 165, .g = 42, .b = 42 };
-        } else if (mem.eql(u8, name, "burlywood")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "burlywood")) {
             return .{ .r = 222, .g = 184, .b = 135 };
-        } else if (mem.eql(u8, name, "cadetblue")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "cadetblue")) {
             return .{ .r = 95, .g = 158, .b = 160 };
-        } else if (mem.eql(u8, name, "chartreuse")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "chartreuse")) {
             return .{ .r = 127, .g = 255, .b = 0 };
-        } else if (mem.eql(u8, name, "chocolate")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "chocolate")) {
             return .{ .r = 210, .g = 105, .b = 30 };
-        } else if (mem.eql(u8, name, "coral")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "coral")) {
             return .{ .r = 255, .g = 127, .b = 80 };
-        } else if (mem.eql(u8, name, "cornflowerblue")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "cornflowerblue")) {
             return .{ .r = 100, .g = 149, .b = 237 };
-        } else if (mem.eql(u8, name, "cornsilk")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "cornsilk")) {
             return .{ .r = 255, .g = 248, .b = 220 };
-        } else if (mem.eql(u8, name, "crimson")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "crimson")) {
             return .{ .r = 220, .g = 20, .b = 60 };
-        } else if (mem.eql(u8, name, "cyan")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "cyan")) {
             return .{ .r = 0, .g = 255, .b = 255 };
-        } else if (mem.eql(u8, name, "darkblue")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darkblue")) {
             return .{ .r = 0, .g = 0, .b = 139 };
-        } else if (mem.eql(u8, name, "darkcyan")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darkcyan")) {
             return .{ .r = 0, .g = 139, .b = 139 };
-        } else if (mem.eql(u8, name, "darkgoldenrod")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darkgoldenrod")) {
             return .{ .r = 184, .g = 134, .b = 11 };
-        } else if (mem.eql(u8, name, "darkgray")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darkgray")) {
             return .{ .r = 169, .g = 169, .b = 169 };
-        } else if (mem.eql(u8, name, "darkgreen")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darkgreen")) {
             return .{ .r = 0, .g = 100, .b = 0 };
-        } else if (mem.eql(u8, name, "darkgrey")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darkgrey")) {
             return .{ .r = 169, .g = 169, .b = 169 };
-        } else if (mem.eql(u8, name, "darkkhaki")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darkkhaki")) {
             return .{ .r = 189, .g = 183, .b = 107 };
-        } else if (mem.eql(u8, name, "darkmagenta")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darkmagenta")) {
             return .{ .r = 139, .g = 0, .b = 139 };
-        } else if (mem.eql(u8, name, "darkolivegreen")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darkolivegreen")) {
             return .{ .r = 85, .g = 107, .b = 47 };
-        } else if (mem.eql(u8, name, "darkorange")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darkorange")) {
             return .{ .r = 255, .g = 140, .b = 0 };
-        } else if (mem.eql(u8, name, "darkorchid")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darkorchid")) {
             return .{ .r = 153, .g = 50, .b = 204 };
-        } else if (mem.eql(u8, name, "darkred")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darkred")) {
             return .{ .r = 139, .g = 0, .b = 0 };
-        } else if (mem.eql(u8, name, "darksalmon")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darksalmon")) {
             return .{ .r = 233, .g = 150, .b = 122 };
-        } else if (mem.eql(u8, name, "darkseagreen")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darkseagreen")) {
             return .{ .r = 143, .g = 188, .b = 143 };
-        } else if (mem.eql(u8, name, "darkslateblue")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darkslateblue")) {
             return .{ .r = 72, .g = 61, .b = 139 };
-        } else if (mem.eql(u8, name, "darkslategray")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darkslategray")) {
             return .{ .r = 47, .g = 79, .b = 79 };
-        } else if (mem.eql(u8, name, "darkslategrey")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darkslategrey")) {
             return .{ .r = 47, .g = 79, .b = 79 };
-        } else if (mem.eql(u8, name, "darkturquoise")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darkturquoise")) {
             return .{ .r = 0, .g = 206, .b = 209 };
-        } else if (mem.eql(u8, name, "darkviolet")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "darkviolet")) {
             return .{ .r = 148, .g = 0, .b = 211 };
-        } else if (mem.eql(u8, name, "deeppink")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "deeppink")) {
             return .{ .r = 255, .g = 20, .b = 147 };
-        } else if (mem.eql(u8, name, "deepskyblue")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "deepskyblue")) {
             return .{ .r = 0, .g = 191, .b = 255 };
-        } else if (mem.eql(u8, name, "dimgray")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "dimgray")) {
             return .{ .r = 105, .g = 105, .b = 105 };
-        } else if (mem.eql(u8, name, "dimgrey")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "dimgrey")) {
             return .{ .r = 105, .g = 105, .b = 105 };
-        } else if (mem.eql(u8, name, "dodgerblue")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "dodgerblue")) {
             return .{ .r = 30, .g = 144, .b = 255 };
-        } else if (mem.eql(u8, name, "firebrick")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "firebrick")) {
             return .{ .r = 178, .g = 34, .b = 34 };
-        } else if (mem.eql(u8, name, "floralwhite")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "floralwhite")) {
             return .{ .r = 255, .g = 250, .b = 240 };
-        } else if (mem.eql(u8, name, "forestgreen")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "forestgreen")) {
             return .{ .r = 34, .g = 139, .b = 34 };
-        } else if (mem.eql(u8, name, "fuchsia")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "fuchsia")) {
             return .{ .r = 255, .g = 0, .b = 255 };
-        } else if (mem.eql(u8, name, "gainsboro")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "gainsboro")) {
             return .{ .r = 220, .g = 220, .b = 220 };
-        } else if (mem.eql(u8, name, "ghostwhite")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "ghostwhite")) {
             return .{ .r = 248, .g = 248, .b = 255 };
-        } else if (mem.eql(u8, name, "goldenrod")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "goldenrod")) {
             return .{ .r = 218, .g = 165, .b = 32 };
-        } else if (mem.eql(u8, name, "gold")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "gold")) {
             return .{ .r = 255, .g = 215, .b = 0 };
-        } else if (mem.eql(u8, name, "gray")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "gray")) {
             return .{ .r = 128, .g = 128, .b = 128 };
-        } else if (mem.eql(u8, name, "green")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "green")) {
             return .{ .r = 0, .g = 128, .b = 0 };
-        } else if (mem.eql(u8, name, "greenyellow")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "greenyellow")) {
             return .{ .r = 173, .g = 255, .b = 47 };
-        } else if (mem.eql(u8, name, "grey")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "grey")) {
             return .{ .r = 128, .g = 128, .b = 128 };
-        } else if (mem.eql(u8, name, "honeydew")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "honeydew")) {
             return .{ .r = 240, .g = 255, .b = 240 };
-        } else if (mem.eql(u8, name, "hotpink")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "hotpink")) {
             return .{ .r = 255, .g = 105, .b = 180 };
-        } else if (mem.eql(u8, name, "indianred")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "indianred")) {
             return .{ .r = 205, .g = 92, .b = 92 };
-        } else if (mem.eql(u8, name, "indigo")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "indigo")) {
             return .{ .r = 75, .g = 0, .b = 130 };
-        } else if (mem.eql(u8, name, "ivory")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "ivory")) {
             return .{ .r = 255, .g = 255, .b = 240 };
-        } else if (mem.eql(u8, name, "khaki")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "khaki")) {
             return .{ .r = 240, .g = 230, .b = 140 };
-        } else if (mem.eql(u8, name, "lavenderblush")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lavenderblush")) {
             return .{ .r = 255, .g = 240, .b = 245 };
-        } else if (mem.eql(u8, name, "lavender")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lavender")) {
             return .{ .r = 230, .g = 230, .b = 250 };
-        } else if (mem.eql(u8, name, "lawngreen")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lawngreen")) {
             return .{ .r = 124, .g = 252, .b = 0 };
-        } else if (mem.eql(u8, name, "lemonchiffon")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lemonchiffon")) {
             return .{ .r = 255, .g = 250, .b = 205 };
-        } else if (mem.eql(u8, name, "lightblue")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lightblue")) {
             return .{ .r = 173, .g = 216, .b = 230 };
-        } else if (mem.eql(u8, name, "lightcoral")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lightcoral")) {
             return .{ .r = 240, .g = 128, .b = 128 };
-        } else if (mem.eql(u8, name, "lightcyan")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lightcyan")) {
             return .{ .r = 224, .g = 255, .b = 255 };
-        } else if (mem.eql(u8, name, "lightgoldenrodyellow")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lightgoldenrodyellow")) {
             return .{ .r = 250, .g = 250, .b = 210 };
-        } else if (mem.eql(u8, name, "lightgray")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lightgray")) {
             return .{ .r = 211, .g = 211, .b = 211 };
-        } else if (mem.eql(u8, name, "lightgreen")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lightgreen")) {
             return .{ .r = 144, .g = 238, .b = 144 };
-        } else if (mem.eql(u8, name, "lightgrey")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lightgrey")) {
             return .{ .r = 211, .g = 211, .b = 211 };
-        } else if (mem.eql(u8, name, "lightpink")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lightpink")) {
             return .{ .r = 255, .g = 182, .b = 193 };
-        } else if (mem.eql(u8, name, "lightsalmon")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lightsalmon")) {
             return .{ .r = 255, .g = 160, .b = 122 };
-        } else if (mem.eql(u8, name, "lightseagreen")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lightseagreen")) {
             return .{ .r = 32, .g = 178, .b = 170 };
-        } else if (mem.eql(u8, name, "lightskyblue")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lightskyblue")) {
             return .{ .r = 135, .g = 206, .b = 250 };
-        } else if (mem.eql(u8, name, "lightslategray")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lightslategray")) {
             return .{ .r = 119, .g = 136, .b = 153 };
-        } else if (mem.eql(u8, name, "lightslategrey")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lightslategrey")) {
             return .{ .r = 119, .g = 136, .b = 153 };
-        } else if (mem.eql(u8, name, "lightsteelblue")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lightsteelblue")) {
             return .{ .r = 176, .g = 196, .b = 222 };
-        } else if (mem.eql(u8, name, "lightyellow")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lightyellow")) {
             return .{ .r = 255, .g = 255, .b = 224 };
-        } else if (mem.eql(u8, name, "lime")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "lime")) {
             return .{ .r = 0, .g = 255, .b = 0 };
-        } else if (mem.eql(u8, name, "limegreen")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "limegreen")) {
             return .{ .r = 50, .g = 205, .b = 50 };
-        } else if (mem.eql(u8, name, "linen")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "linen")) {
             return .{ .r = 250, .g = 240, .b = 230 };
-        } else if (mem.eql(u8, name, "magenta")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "magenta")) {
             return .{ .r = 255, .g = 0, .b = 255 };
-        } else if (mem.eql(u8, name, "maroon")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "maroon")) {
             return .{ .r = 128, .g = 0, .b = 0 };
-        } else if (mem.eql(u8, name, "mediumaquamarine")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "mediumaquamarine")) {
             return .{ .r = 102, .g = 205, .b = 170 };
-        } else if (mem.eql(u8, name, "mediumblue")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "mediumblue")) {
             return .{ .r = 0, .g = 0, .b = 205 };
-        } else if (mem.eql(u8, name, "mediumorchid")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "mediumorchid")) {
             return .{ .r = 186, .g = 85, .b = 211 };
-        } else if (mem.eql(u8, name, "mediumpurple")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "mediumpurple")) {
             return .{ .r = 147, .g = 112, .b = 219 };
-        } else if (mem.eql(u8, name, "mediumseagreen")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "mediumseagreen")) {
             return .{ .r = 60, .g = 179, .b = 113 };
-        } else if (mem.eql(u8, name, "mediumslateblue")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "mediumslateblue")) {
             return .{ .r = 123, .g = 104, .b = 238 };
-        } else if (mem.eql(u8, name, "mediumspringgreen")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "mediumspringgreen")) {
             return .{ .r = 0, .g = 250, .b = 154 };
-        } else if (mem.eql(u8, name, "mediumturquoise")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "mediumturquoise")) {
             return .{ .r = 72, .g = 209, .b = 204 };
-        } else if (mem.eql(u8, name, "mediumvioletred")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "mediumvioletred")) {
             return .{ .r = 199, .g = 21, .b = 133 };
-        } else if (mem.eql(u8, name, "midnightblue")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "midnightblue")) {
             return .{ .r = 25, .g = 25, .b = 112 };
-        } else if (mem.eql(u8, name, "mintcream")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "mintcream")) {
             return .{ .r = 245, .g = 255, .b = 250 };
-        } else if (mem.eql(u8, name, "mistyrose")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "mistyrose")) {
             return .{ .r = 255, .g = 228, .b = 225 };
-        } else if (mem.eql(u8, name, "moccasin")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "moccasin")) {
             return .{ .r = 255, .g = 228, .b = 181 };
-        } else if (mem.eql(u8, name, "navajowhite")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "navajowhite")) {
             return .{ .r = 255, .g = 222, .b = 173 };
-        } else if (mem.eql(u8, name, "navy")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "navy")) {
             return .{ .r = 0, .g = 0, .b = 128 };
-        } else if (mem.eql(u8, name, "oldlace")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "oldlace")) {
             return .{ .r = 253, .g = 245, .b = 230 };
-        } else if (mem.eql(u8, name, "olive")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "olive")) {
             return .{ .r = 128, .g = 128, .b = 0 };
-        } else if (mem.eql(u8, name, "olivedrab")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "olivedrab")) {
             return .{ .r = 107, .g = 142, .b = 35 };
-        } else if (mem.eql(u8, name, "orange")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "orange")) {
             return .{ .r = 255, .g = 165, .b = 0 };
-        } else if (mem.eql(u8, name, "orangered")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "orangered")) {
             return .{ .r = 255, .g = 69, .b = 0 };
-        } else if (mem.eql(u8, name, "orchid")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "orchid")) {
             return .{ .r = 218, .g = 112, .b = 214 };
-        } else if (mem.eql(u8, name, "palegoldenrod")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "palegoldenrod")) {
             return .{ .r = 238, .g = 232, .b = 170 };
-        } else if (mem.eql(u8, name, "palegreen")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "palegreen")) {
             return .{ .r = 152, .g = 251, .b = 152 };
-        } else if (mem.eql(u8, name, "paleturquoise")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "paleturquoise")) {
             return .{ .r = 175, .g = 238, .b = 238 };
-        } else if (mem.eql(u8, name, "palevioletred")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "palevioletred")) {
             return .{ .r = 219, .g = 112, .b = 147 };
-        } else if (mem.eql(u8, name, "papayawhip")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "papayawhip")) {
             return .{ .r = 255, .g = 239, .b = 213 };
-        } else if (mem.eql(u8, name, "peachpuff")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "peachpuff")) {
             return .{ .r = 255, .g = 218, .b = 185 };
-        } else if (mem.eql(u8, name, "peru")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "peru")) {
             return .{ .r = 205, .g = 133, .b = 63 };
-        } else if (mem.eql(u8, name, "pink")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "pink")) {
             return .{ .r = 255, .g = 192, .b = 203 };
-        } else if (mem.eql(u8, name, "plum")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "plum")) {
             return .{ .r = 221, .g = 160, .b = 221 };
-        } else if (mem.eql(u8, name, "powderblue")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "powderblue")) {
             return .{ .r = 176, .g = 224, .b = 230 };
-        } else if (mem.eql(u8, name, "purple")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "purple")) {
             return .{ .r = 128, .g = 0, .b = 128 };
-        } else if (mem.eql(u8, name, "red")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "red")) {
             return .{ .r = 255, .g = 0, .b = 0 };
-        } else if (mem.eql(u8, name, "rosybrown")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "rosybrown")) {
             return .{ .r = 188, .g = 143, .b = 143 };
-        } else if (mem.eql(u8, name, "royalblue")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "royalblue")) {
             return .{ .r = 65, .g = 105, .b = 225 };
-        } else if (mem.eql(u8, name, "saddlebrown")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "saddlebrown")) {
             return .{ .r = 139, .g = 69, .b = 19 };
-        } else if (mem.eql(u8, name, "salmon")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "salmon")) {
             return .{ .r = 250, .g = 128, .b = 114 };
-        } else if (mem.eql(u8, name, "sandybrown")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "sandybrown")) {
             return .{ .r = 244, .g = 164, .b = 96 };
-        } else if (mem.eql(u8, name, "seagreen")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "seagreen")) {
             return .{ .r = 46, .g = 139, .b = 87 };
-        } else if (mem.eql(u8, name, "seashell")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "seashell")) {
             return .{ .r = 255, .g = 245, .b = 238 };
-        } else if (mem.eql(u8, name, "sienna")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "sienna")) {
             return .{ .r = 160, .g = 82, .b = 45 };
-        } else if (mem.eql(u8, name, "silver")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "silver")) {
             return .{ .r = 192, .g = 192, .b = 192 };
-        } else if (mem.eql(u8, name, "skyblue")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "skyblue")) {
             return .{ .r = 135, .g = 206, .b = 235 };
-        } else if (mem.eql(u8, name, "slateblue")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "slateblue")) {
             return .{ .r = 106, .g = 90, .b = 205 };
-        } else if (mem.eql(u8, name, "slategray")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "slategray")) {
             return .{ .r = 112, .g = 128, .b = 144 };
-        } else if (mem.eql(u8, name, "slategrey")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "slategrey")) {
             return .{ .r = 112, .g = 128, .b = 144 };
-        } else if (mem.eql(u8, name, "snow")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "snow")) {
             return .{ .r = 255, .g = 250, .b = 250 };
-        } else if (mem.eql(u8, name, "springgreen")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "springgreen")) {
             return .{ .r = 0, .g = 255, .b = 127 };
-        } else if (mem.eql(u8, name, "steelblue")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "steelblue")) {
             return .{ .r = 70, .g = 130, .b = 180 };
-        } else if (mem.eql(u8, name, "tan")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "tan")) {
             return .{ .r = 210, .g = 180, .b = 140 };
-        } else if (mem.eql(u8, name, "teal")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "teal")) {
             return .{ .r = 0, .g = 128, .b = 128 };
-        } else if (mem.eql(u8, name, "thistle")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "thistle")) {
             return .{ .r = 216, .g = 191, .b = 216 };
-        } else if (mem.eql(u8, name, "tomato")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "tomato")) {
             return .{ .r = 255, .g = 99, .b = 71 };
-        } else if (mem.eql(u8, name, "turquoise")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "turquoise")) {
             return .{ .r = 64, .g = 224, .b = 208 };
-        } else if (mem.eql(u8, name, "violet")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "violet")) {
             return .{ .r = 238, .g = 130, .b = 238 };
-        } else if (mem.eql(u8, name, "wheat")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "wheat")) {
             return .{ .r = 245, .g = 222, .b = 179 };
-        } else if (mem.eql(u8, name, "white")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "white")) {
             return .{ .r = 255, .g = 255, .b = 255 };
-        } else if (mem.eql(u8, name, "whitesmoke")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "whitesmoke")) {
             return .{ .r = 245, .g = 245, .b = 245 };
-        } else if (mem.eql(u8, name, "yellow")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "yellow")) {
             return .{ .r = 255, .g = 255, .b = 0 };
-        } else if (mem.eql(u8, name, "yellowgreen")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "yellowgreen")) {
             return .{ .r = 154, .g = 205, .b = 50 };
         }
 
