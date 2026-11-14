@@ -13,9 +13,9 @@ pub const FillRule = enum { nonzero, even_odd };
 pub const Error = error{ OutOfMemory, TooComplex };
 
 pub const Limits = struct {
-    max_edges: usize = 1 << 16,
+    max_edges: usize = 1 << 14,
     /// Pair tests and winding steps, bounds the quadratic parts.
-    max_work: usize = 1 << 27,
+    max_work: usize = 1 << 26,
 };
 
 pub fn isFilled(rule: FillRule, winding: i64) bool {
@@ -379,6 +379,8 @@ fn splitRound(allocator: Allocator, edges: *std.ArrayList(DirectedEdge), work: *
             kept += 1;
             try work.charge();
             try findSplits(allocator, &splits, edges.items, active_index, index);
+            // Several edges crossing in one point produce duplicate splits.
+            if (splits.items.len > 4 * max_edges) return error.TooComplex;
         }
         active.shrinkRetainingCapacity(kept);
         try active.append(allocator, index);
