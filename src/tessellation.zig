@@ -108,18 +108,24 @@ pub fn fill(allocator: Allocator, contours: []const []const Point, options: Opti
     _ = try tessellator.mergeCoincidentVertices(&mesh);
     _ = try tessellator.simplify(&mesh);
 
-    var output: Output = .{ .rotated = rotated };
+    var output: Output = .{ .allocator = allocator, .rotated = rotated };
+    errdefer output.deinit();
     if (options.anti_alias) {
         const result = try antialias.tessellate(&tessellator, mesh, options.fill_rule);
-        try output.emitPolys(arena, result.polys, .nonzero);
-        for (result.triangles) |triangle| try output.emitTriangle(arena, triangle[0], triangle[1], triangle[2]);
-    } else try output.emitPolys(arena, try tessellator.tessellate(mesh), options.fill_rule);
+        try output.reserve(tessellator.edge_count + result.triangles.len);
+        try output.emitPolys(result.polys, .nonzero);
+        for (result.triangles) |triangle| try output.emitTriangle(triangle[0], triangle[1], triangle[2]);
+    } else {
+        const polys = try tessellator.tessellate(mesh);
+        try output.reserve(tessellator.edge_count);
+        try output.emitPolys(polys, options.fill_rule);
+    }
 
-    const positions = try allocator.dupe(Point, output.positions.items);
+    const positions = try output.positions.toOwnedSlice(allocator);
     errdefer allocator.free(positions);
-    const coverages = try allocator.dupe(f32, output.coverages.items);
+    const coverages = try output.coverages.toOwnedSlice(allocator);
     errdefer allocator.free(coverages);
-    const indices = try allocator.dupe(u32, output.indices.items);
+    const indices = try output.indices.toOwnedSlice(allocator);
     return .{ .positions = positions, .coverages = coverages, .indices = indices };
 }
 
@@ -863,23 +869,39 @@ pub const Tessellator = struct {
     }
 };
 
+/// Lists in the caller's allocator, handed over without a copy.
 const Output = struct {
+    allocator: Allocator,
     rotated: bool,
     positions: std.ArrayList(Point) = .empty,
     coverages: std.ArrayList(f32) = .empty,
     indices: std.ArrayList(u32) = .empty,
 
-    fn emitPolys(output: *Output, arena: Allocator, polys: ?*Poly, fill_rule: FillRule) error{OutOfMemory}!void {
+    fn deinit(output: *Output) void {
+        output.positions.deinit(output.allocator);
+        output.coverages.deinit(output.allocator);
+        output.indices.deinit(output.allocator);
+    }
+
+    /// A triangulated planar mesh has fewer vertices and triangles than edges, so the count
+    /// of edges plus loose triangles is an estimate for both. Appends past it still grow.
+    fn reserve(output: *Output, edge_count: usize) error{OutOfMemory}!void {
+        try output.positions.ensureTotalCapacity(output.allocator, edge_count);
+        try output.coverages.ensureTotalCapacity(output.allocator, edge_count);
+        try output.indices.ensureTotalCapacity(output.allocator, 3 * edge_count);
+    }
+
+    fn emitPolys(output: *Output, polys: ?*Poly, fill_rule: FillRule) error{OutOfMemory}!void {
         var poly = polys;
         while (poly) |current| : (poly = current.next) {
             if (current.count < 3 or !arrangement.isFilled(fill_rule, current.winding)) continue;
             var monotone = current.head;
-            while (monotone) |monotone_poly| : (monotone = monotone_poly.next) try output.emitMonotonePoly(arena, monotone_poly);
+            while (monotone) |monotone_poly| : (monotone = monotone_poly.next) try output.emitMonotonePoly(monotone_poly);
         }
     }
 
     /// Ear clipping along the monotone chain, the vertices' list links become the chain.
-    fn emitMonotonePoly(output: *Output, arena: Allocator, monotone: *const MonotonePoly) error{OutOfMemory}!void {
+    fn emitMonotonePoly(output: *Output, monotone: *const MonotonePoly) error{OutOfMemory}!void {
         assert(monotone.winding != 0);
         var chain: VertexList = .{};
         var next_edge = monotone.first_edge;
@@ -902,10 +924,10 @@ const Output = struct {
         while (vertex != chain.tail.?) {
             const prev = vertex.prev.?;
             const next = vertex.next.?;
-            if (count == 3) return output.emitTriangle(arena, prev, vertex, next);
+            if (count == 3) return output.emitTriangle(prev, vertex, next);
             const turn = orientation(prev.point, vertex.point, next.point);
             if (turn >= 0) {
-                try output.emitTriangle(arena, prev, vertex, next);
+                try output.emitTriangle(prev, vertex, next);
                 prev.next = next;
                 next.prev = prev;
                 count -= 1;
@@ -914,19 +936,19 @@ const Output = struct {
         }
     }
 
-    fn emitTriangle(output: *Output, arena: Allocator, a: *Vertex, b: *Vertex, c: *Vertex) error{OutOfMemory}!void {
+    fn emitTriangle(output: *Output, a: *Vertex, b: *Vertex, c: *Vertex) error{OutOfMemory}!void {
         const area = orientation(a.point, b.point, c.point);
         if (area == 0) return;
         const corners: [3]*Vertex = if (area > 0) .{ a, b, c } else .{ a, c, b };
-        for (corners) |corner| try output.indices.append(arena, try output.indexOf(arena, corner));
+        for (corners) |corner| try output.indices.append(output.allocator, try output.indexOf(corner));
     }
 
-    fn indexOf(output: *Output, arena: Allocator, vertex: *Vertex) error{OutOfMemory}!u32 {
+    fn indexOf(output: *Output, vertex: *Vertex) error{OutOfMemory}!u32 {
         if (vertex.output_index) |index| return index;
         const index: u32 = @intCast(output.positions.items.len);
         const point: GridPoint = if (output.rotated) .{ vertex.point[1], -vertex.point[0] } else vertex.point;
-        try output.positions.append(arena, .{ gridToPixels(point[0]), gridToPixels(point[1]) });
-        try output.coverages.append(arena, std.math.clamp(vertex.coverage, 0, 1));
+        try output.positions.append(output.allocator, .{ gridToPixels(point[0]), gridToPixels(point[1]) });
+        try output.coverages.append(output.allocator, std.math.clamp(vertex.coverage, 0, 1));
         vertex.output_index = index;
         return index;
     }
