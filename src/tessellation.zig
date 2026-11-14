@@ -51,6 +51,11 @@ pub const Limits = struct {
     max_work: u64 = 1 << 27,
 };
 
+/// Measured on icons: 50 to 100 KiB for 8 to 80 points.
+const min_scratch_bytes = 64 << 10;
+const scratch_bytes_per_point = 1 << 10;
+const max_scratch_bytes = 1 << 20;
+
 pub const Options = struct {
     fill_rule: FillRule,
     anti_alias: bool,
@@ -76,9 +81,13 @@ pub fn fill(allocator: Allocator, contours: []const []const Point, options: Opti
     for (contours) |contour| point_count += contour.len;
     if (point_count > options.limits.max_points) return error.TooComplex;
 
+    // A bump buffer in front of the arena spares its atomic bookkeeping on every vertex and edge.
+    const scratch = try allocator.alloc(u8, @min(max_scratch_bytes, min_scratch_bytes + point_count * scratch_bytes_per_point));
+    defer allocator.free(scratch);
     var arena_state: std.heap.ArenaAllocator = .init(allocator);
     defer arena_state.deinit();
-    const arena = arena_state.allocator();
+    var scratch_state: std.heap.BufferFirstAllocator = .init(scratch, arena_state.allocator());
+    const arena = scratch_state.allocator();
 
     const grid_contours = try arena.alloc([]GridPoint, contours.len);
     var minimum: GridPoint = @splat(std.math.maxInt(i32));
