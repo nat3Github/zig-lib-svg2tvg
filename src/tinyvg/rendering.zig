@@ -674,44 +674,16 @@ pub fn renderEllipse(
     if (radius_x == 0) return error.RadiusXCantBeZero;
     if (radius_y == 0) return error.RadiusYCantBeZero;
 
-    // std.debug.print("renderEllipse(({d:.3} {d:.3}), ({d:.3} {d:.3}), {d:.2}, {d:.2}, {d:.4}, large={}, left={})\n", .{
-    //     p0.x,
-    //     p0.y,
-    //     p1.x,
-    //     p1.y,
-    //     radius_x,
-    //     radius_y,
-    //     rotation,
-    //     large_arc,
-    //     turn_left,
-    // });
-
-    const radius_min = distance(p0, p1) / 2.0;
-    const radius_lim = sqrt(radius_x * radius_x + radius_y * radius_y); // @min(std.math.fabs(radius_x), std.math.fabs(radius_y));
-    std.debug.assert(radius_lim != 0);
-    if (radius_lim == 0) return error.RadiusLimCantBeZero;
-
-    const up_scale = if (radius_lim < radius_min)
-        radius_min / radius_lim
-    else
-        1.0;
-    if (up_scale == 0) return error.UpScaleCantBeZero;
-
-    // std.debug.print("radius_min={d} radius_lim={d} up_scale={d}\n", .{ radius_min, radius_lim, up_scale });
-
-    // std.debug.print("{d} {d} {d}, {d} => {d}\n", .{ radius_x, radius_y, radius_lim, radius_min, up_scale });
-
-    std.debug.assert(radius_y != 0);
-    std.debug.assert(up_scale != 0);
+    // renderCircle grows a too small radius to half the chord: the SVG radius correction.
     const ratio = radius_x / radius_y;
     const rot = rotationMat(toRadians(-rotation));
     const transform = [2][2]f32{
-        .{ rot[0][0] / up_scale, rot[0][1] / up_scale },
-        .{ rot[1][0] / up_scale * ratio, rot[1][1] / up_scale * ratio },
+        .{ rot[0][0], rot[0][1] },
+        .{ rot[1][0] * ratio, rot[1][1] * ratio },
     };
     const transform_back = [2][2]f32{
-        .{ rot[1][1] * up_scale, -rot[0][1] / ratio * up_scale },
-        .{ -rot[1][0] * up_scale, rot[0][0] / ratio * up_scale },
+        .{ rot[1][1], -rot[0][1] / ratio },
+        .{ -rot[1][0], rot[0][0] / ratio },
     };
 
     const Helper = struct {
@@ -732,7 +704,7 @@ pub fn renderEllipse(
         &tmp,
         applyMat(transform, p0),
         applyMat(transform, p1),
-        radius_x * up_scale,
+        radius_x,
         large_arc,
         turn_left,
         start_width,
