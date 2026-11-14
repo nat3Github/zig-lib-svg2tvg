@@ -412,7 +412,8 @@ pub const make_node = struct {
     }
     pub fn elliptical_arc(self: *make_node, lw: ?f32, rx: f32, ry: f32, rotation: f32, large_arc: bool, sweep_ccw: bool, p: Point, rel: bool) Node {
         if (make_node_debug2) std.log.warn("make_node: elliptical_arc", .{});
-        if (rx == 0 or ry == 0) return self.line(lw, p, rel);
+        // SVG omits an arc whose end is its start.
+        if (rx == 0 or ry == 0 or std.meta.eql(addPoints(self.cur, p, rel), self.cur)) return self.line(lw, p, rel);
         self.cur = addPoints(self.cur, p, rel);
         self.reset_last_control();
         return Node{ .arc_ellipse = NodeData(Node.ArcEllipse){
