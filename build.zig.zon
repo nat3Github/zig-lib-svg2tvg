@@ -7,6 +7,7 @@
         .xml = .{
             .url = "git+https://github.com/ianprime0509/zig-xml#4beab29d68ab308af4bd12a4fc4187c24fdad0d6",
             .hash = "xml-0.2.2-ZTbP35N4AgAN3HBgWmBp_LAQ0MIPKW17GAGMwx4DHGYK",
+            .lazy = true,
         },
     },
     .paths = .{

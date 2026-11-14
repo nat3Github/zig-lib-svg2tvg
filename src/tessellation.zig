@@ -31,7 +31,8 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
-const arrangement = @import("arrangement.zig");
+pub const arrangement = @import("arrangement.zig");
+pub const tvg = @import("tinyvg/tinyvg.zig");
 const antialias = @import("tessellation_antialias.zig");
 const GridPoint = arrangement.GridPoint;
 

@@ -11,14 +11,13 @@ const Stack = ut.Stack;
 const NodeMaker = ut.NodeMaker;
 const ColMap = ut.ColMap;
 const svg_ut = @import("svg-util.zig");
-const arrangement = @import("arrangement.zig");
+const arrangement = @import("tessellation").arrangement;
 const SvgColor = svg_ut.SvgColor;
 const SvgColorAttribute = svg_ut.SvgColorAttribute;
 
 const xml = @import("xml");
 
-const tinyvg2 = @import("tinyvg/tinyvg.zig");
-pub const tvg = tinyvg2;
+pub const tvg = @import("tessellation").tvg;
 
 pub const Color = tvg.Color;
 const Path = tvg.Path;

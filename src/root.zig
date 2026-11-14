@@ -1,11 +1,10 @@
 pub const ut = @import("util.zig");
 pub const svg_ut = @import("svg-util.zig");
-const tinyvg2 = @import("tinyvg/tinyvg.zig");
-pub const tvg = tinyvg2;
-pub const tvg_parsing = @import("tinyvg/parsing.zig");
+pub const tessellation = @import("tessellation");
+pub const tvg = tessellation.tvg;
+pub const tvg_parsing = tvg.parsing;
 pub const conversion = @import("conversion.zig");
-pub const arrangement = @import("arrangement.zig");
-pub const tessellation = @import("tessellation.zig");
+pub const arrangement = tessellation.arrangement;
 pub const tvg_from_svg = conversion.tvg_from_svg;
 
 pub const Color = tvg.Color;
