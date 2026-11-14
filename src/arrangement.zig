@@ -157,10 +157,10 @@ pub const Arrangement = struct {
     /// Every edge is exactly one input edge: nothing was split, merged or cancelled.
     input_edges_unchanged: bool,
 
-    pub fn init(allocator: Allocator, contours: Contours, limits: Limits) Error!Arrangement {
+    /// `work` may be shared by several arrangements to bound their total.
+    pub fn init(allocator: Allocator, contours: Contours, limits: Limits, work: *Work) Error!Arrangement {
         assert(limits.max_edges <= std.math.maxInt(u32));
         if (contours.points.len > limits.max_edges or contours.count() > limits.max_edges) return error.TooComplex;
-        var work: Work = .{ .remaining = limits.max_work };
         var directed: std.ArrayList(DirectedEdge) = .empty;
         defer directed.deinit(allocator);
         for (0..contours.count()) |contour_index| {
@@ -171,7 +171,7 @@ pub const Arrangement = struct {
             }
         }
         var input_edges_unchanged = true;
-        while (try splitRound(allocator, &directed, &work, limits.max_edges)) input_edges_unchanged = false;
+        while (try splitRound(allocator, &directed, work, limits.max_edges)) input_edges_unchanged = false;
 
         var edges: std.ArrayList(Edge) = try .initCapacity(allocator, directed.items.len);
         defer edges.deinit(allocator);
@@ -203,7 +203,7 @@ pub const Arrangement = struct {
             kept += 1;
         }
         edges.shrinkRetainingCapacity(kept);
-        try computeWindings(edges.items, &work);
+        try computeWindings(edges.items, work);
         return .{ .edges = try edges.toOwnedSlice(allocator), .input_edges_unchanged = input_edges_unchanged };
     }
 
@@ -269,8 +269,12 @@ pub const Arrangement = struct {
     }
 };
 
-const Work = struct {
+pub const Work = struct {
     remaining: usize,
+
+    pub fn init(limits: Limits) Work {
+        return .{ .remaining = limits.max_work };
+    }
 
     fn charge(work: *Work) error{TooComplex}!void {
         if (work.remaining == 0) return error.TooComplex;

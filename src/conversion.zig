@@ -701,6 +701,7 @@ const Recorder = struct {
     allocator: Allocator,
     commands: std.ArrayList(DrawCommand) = .empty,
     colors: std.array_hash_map.Auto(ColorHash, void) = .empty,
+    arrangement_work: arrangement.Work = .init(.{}),
 
     fn colorStyle(self: *Recorder, color: Color) !Style {
         const entry = try self.colors.getOrPut(self.allocator, .fromColor(color));
@@ -731,7 +732,7 @@ pub fn write_path(
     if (fill != null) {
         fill_segments = switch (stack.top().?.@"fill-rule" orelse .nonzero) {
             .evenodd => pathlist,
-            .nonzero => try self.even_odd_segments_for_nonzero(arena_alloc, pathlist),
+            .nonzero => try self.even_odd_segments_for_nonzero(arena_alloc, pathlist, &recorder.arrangement_work),
         };
     }
     const fill_style: ?Style = if (fill != null and fill_segments.len > 0) try recorder.colorStyle(fill.?) else null;
@@ -784,14 +785,14 @@ fn encode(gpa: Allocator, width: u32, height: u32, scale: Scale, range: Range, c
 /// TinyVG fills every path even-odd. Returns segments whose even-odd fill is the nonzero fill of
 /// `pathlist`: the path itself if both rules agree, without the contours between two filled
 /// regions if no edges touch, otherwise the flattened boundary of the filled regions.
-fn even_odd_segments_for_nonzero(self: *const @This(), arena_alloc: Allocator, pathlist: []Segment) ![]const Segment {
+fn even_odd_segments_for_nonzero(self: *const @This(), arena_alloc: Allocator, pathlist: []Segment, work: *arrangement.Work) ![]const Segment {
     // A fixed fraction of the image looks alike at every display size. 1/4096 gives a circle
     // spanning the image about 100 segments, as many as the reference renderer draws.
     const tolerance = @max(self.svg.width.?, self.svg.height.?) / 4096;
     const limits: arrangement.Limits = .{};
     const contours = try arrangement.flattenSegments(arena_alloc, pathlist, self.scale, tolerance, limits.max_edges);
     assert(contours.count() == pathlist.len);
-    const regions = try arrangement.Arrangement.init(arena_alloc, contours, limits);
+    const regions = try arrangement.Arrangement.init(arena_alloc, contours, limits, work);
     if (regions.fillRulesAgree()) return pathlist;
 
     if (regions.input_edges_unchanged) {
