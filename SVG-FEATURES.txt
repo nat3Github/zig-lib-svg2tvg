@@ -1,0 +1,35 @@
+SVG features handled by tvg_from_svg (src/conversion.zig)
+
+Supported
+  Elements
+    svg         width, height, viewBox; preserveAspectRatio is always xMidYMid meet
+    g           fill, fill-rule, stroke, stroke-width, inherited by children
+    rect        x, y, width, height, rx, ry
+    circle      cx, cy, r
+    ellipse     cx, cy, rx, ry
+    line        x1, y1, x2, y2 (stroke only)
+    polyline    points
+    polygon     points
+    path        d: M L H V C S Q T A Z, absolute and relative
+  Presentation attributes (as XML attributes)
+    fill, stroke          #RGB, #RRGGBB, rgb(r,g,b) with integers or percent,
+                          named colors, none, inherit, currentColor
+    fill-rule             nonzero, evenodd
+    stroke-width          scaled by the viewBox
+  Lengths
+    plain numbers; a trailing unit or % is stripped and the number used as is
+
+Parsed and ignored
+  opacity, fill-opacity, stroke-opacity   every color is written fully opaque
+  color                                   currentColor falls back to the parent fill/stroke
+
+Unsupported (element skipped with a warning, or attribute ignored)
+  style attribute and <style>, CSS classes
+  transform
+  defs, use, symbol, clipPath, mask, marker, pattern, image
+  linearGradient, radialGradient
+  text, tspan, textPath
+  stroke-linecap, stroke-linejoin, stroke-miterlimit, stroke-dasharray, stroke-dashoffset
+  visibility, display, filter
+  nested svg elements
+  units (em, %, mm, ...) and percentages relative to the viewport
