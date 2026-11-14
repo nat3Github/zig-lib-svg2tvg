@@ -105,9 +105,12 @@ const Flattener = struct {
         return std.math.approxEqAbs(f32, a.x, b.x, 1e-5) and std.math.approxEqAbs(f32, a.y, b.y, 1e-5);
     }
 
-    /// Wang's formula: n segments keep the polyline within `tolerance` of the curve.
+    /// Wang's formula: n uniform steps keep the polyline within `tolerance` of the curve. Halving
+    /// on those steps stops once the control points lie within `tolerance` of the chord, so the
+    /// curve stays within `tolerance` and the segment count never exceeds Wang's.
     fn appendBezier(flattener: *Flattener, controls: []const tvg.Point, tolerance: f32) !void {
         assert(controls.len == 3 or controls.len == 4);
+        for (controls) |control| if (!std.math.isFinite(control.x) or !std.math.isFinite(control.y)) return error.TooComplex;
         var largest_second_difference: f64 = 0;
         for (controls[0 .. controls.len - 2], controls[1 .. controls.len - 1], controls[2..]) |a, b, c| {
             const x = @as(f64, a.x) - 2 * @as(f64, b.x) + @as(f64, c.x);
@@ -118,19 +121,50 @@ const Flattener = struct {
         const divisions = @ceil(@sqrt(degree * (degree - 1) / 8 * largest_second_difference / tolerance));
         if (!(divisions <= @as(f64, @floatFromInt(flattener.max_points)))) return error.TooComplex;
         const division_count: usize = @max(1, @as(usize, @intFromFloat(divisions)));
-        for (1..division_count) |step| {
-            const t = @as(f64, @floatFromInt(step)) / @as(f64, @floatFromInt(division_count));
-            var reduced: [4][2]f64 = undefined;
-            for (reduced[0..controls.len], controls) |*value, control| value.* = .{ control.x, control.y };
-            var remaining = controls.len;
-            while (remaining > 1) : (remaining -= 1) {
-                for (reduced[0 .. remaining - 1], reduced[1..remaining]) |*value, next| {
-                    value.* = .{ value[0] + t * (next[0] - value[0]), value[1] + t * (next[1] - value[1]) };
-                }
-            }
-            try flattener.append(.{ .x = @floatCast(reduced[0][0]), .y = @floatCast(reduced[0][1]) }, 0);
-        }
+        var curve: [4]Vector = undefined;
+        for (curve[0..controls.len], controls) |*value, control| value.* = .{ control.x, control.y };
+        try flattener.appendSteps(curve[0..controls.len], 0, division_count, tolerance, 0);
         try flattener.append(controls[controls.len - 1], 0);
+    }
+
+    const Vector = @Vector(2, f64);
+    const max_depth = 64;
+
+    /// The cut points strictly between `first_step` and `last_step` of Wang's uniform steps.
+    fn appendSteps(flattener: *Flattener, controls: []const Vector, first_step: usize, last_step: usize, tolerance: f64, depth: u32) !void {
+        assert(first_step < last_step);
+        assert(depth < max_depth);
+        if (last_step - first_step == 1 or controlsNearChord(controls, tolerance)) return;
+        const middle_step = first_step + (last_step - first_step) / 2;
+        const t: Vector = @splat(@as(f64, @floatFromInt(middle_step - first_step)) / @as(f64, @floatFromInt(last_step - first_step)));
+        var reduced: [4]Vector = undefined;
+        @memcpy(reduced[0..controls.len], controls);
+        var left: [4]Vector = undefined;
+        var right: [4]Vector = undefined;
+        for (0..controls.len) |level| {
+            const remaining = controls.len - level;
+            left[level] = reduced[0];
+            right[remaining - 1] = reduced[remaining - 1];
+            for (reduced[0 .. remaining - 1], reduced[1..remaining]) |*value, next| value.* += t * (next - value.*);
+        }
+        const cut = left[controls.len - 1];
+        try flattener.appendSteps(left[0..controls.len], first_step, middle_step, tolerance, depth + 1);
+        try flattener.append(.{ .x = @floatCast(cut[0]), .y = @floatCast(cut[1]) }, 0);
+        try flattener.appendSteps(right[0..controls.len], middle_step, last_step, tolerance, depth + 1);
+    }
+
+    /// Distance to the chord as a segment: a collinear control beyond an end point overshoots.
+    fn controlsNearChord(controls: []const Vector, tolerance: f64) bool {
+        const start = controls[0];
+        const chord = controls[controls.len - 1] - start;
+        const chord_length_squared = @reduce(.Add, chord * chord);
+        for (controls[1 .. controls.len - 1]) |control| {
+            const offset = control - start;
+            const along = if (chord_length_squared > 0) std.math.clamp(@reduce(.Add, offset * chord) / chord_length_squared, 0, 1) else 0;
+            const away = offset - @as(Vector, @splat(along)) * chord;
+            if (!(@reduce(.Add, away * away) <= tolerance * tolerance)) return false;
+        }
+        return true;
     }
 };
 
