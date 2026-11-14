@@ -933,8 +933,12 @@ pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]con
                 if (!found_svg_tag) {
                     if (std.mem.eql(u8, "svg", element_tag)) {
                         found_svg_tag = true;
-                        var props = InheritableProperties{};
+                        const initial_properties = InheritableProperties{};
+                        var props = initial_properties;
                         props.override_from(svg);
+                        // The fallback level below only serves currentColor, root `inherit` takes the initial value.
+                        if (std.meta.eql(props.fill, @as(?SvgColor, .inherit))) props.fill = initial_properties.fill;
+                        if (std.meta.eql(props.stroke, @as(?SvgColor, .inherit))) props.stroke = initial_properties.stroke;
                         try stack.push(props);
                     }
                 } else {
