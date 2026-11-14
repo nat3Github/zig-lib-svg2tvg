@@ -14,18 +14,15 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = tessellation_module })).step);
 
     // --- Core module: SVG→TVG conversion only, no renderer -------------------
-    if (b.option(bool, "converter", "Module svg2tvg with the SVG converter, fetches xml") orelse true) {
-        if (b.lazyDependency("xml", .{ .target = target, .optimize = optimize })) |xml_dependency| {
-            const this_module = b.addModule("svg2tvg", .{
-                .root_source_file = b.path("src/root.zig"),
-                .target = target,
-                .optimize = optimize,
-            });
-            this_module.addImport("xml", xml_dependency.module("xml"));
-            this_module.addImport("tessellation", tessellation_module);
-            test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = this_module })).step);
-        }
-    }
+    const xml_dependency = b.dependency("xml", .{ .target = target, .optimize = optimize });
+    const this_module = b.addModule("svg2tvg", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    this_module.addImport("xml", xml_dependency.module("xml"));
+    this_module.addImport("tessellation", tessellation_module);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = this_module })).step);
 
     // Demo + dump examples live in examples/ as a separate build that imports
     // svg2tvg via local path. See examples/build.zig.
