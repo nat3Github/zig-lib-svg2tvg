@@ -31,8 +31,8 @@ pub fn renderBuffer(
     );
 }
 
-/// 32768 × 32768 pixels including anti-aliasing samples, a 16 GiB temporary framebuffer.
-pub const max_render_pixel_count = 1 << 30;
+/// 4096 × 4096 pixels including anti-aliasing samples, a 256 MiB temporary framebuffer.
+pub const max_render_pixel_count = 1 << 24;
 
 /// Renders a TinyVG graphic and returns the rendered image.
 /// - `temporary_allocator` is used for temporary allocations.
