@@ -329,7 +329,7 @@ pub const Work = struct {
         return .{ .remaining = limits.max_work };
     }
 
-    fn charge(work: *Work) error{TooComplex}!void {
+    pub fn charge(work: *Work) error{TooComplex}!void {
         if (work.remaining == 0) return error.TooComplex;
         work.remaining -= 1;
     }

@@ -38,6 +38,7 @@ const GridPoint = arrangement.GridPoint;
 
 pub const Point = [2]f32;
 pub const FillRule = arrangement.FillRule;
+pub const Work = arrangement.Work;
 pub const Error = error{ OutOfMemory, InvalidInput, TooComplex };
 
 pub const grid_per_pixel = 256;
@@ -48,7 +49,7 @@ pub const Limits = struct {
     max_points: u32 = 1 << 16,
     max_edges: u32 = 1 << 20,
     /// Active edge scans, rewind steps and list walks.
-    max_work: u64 = 1 << 27,
+    max_work: usize = 1 << 22,
 };
 
 /// Measured on icons: 50 to 100 KiB for 8 to 80 points.
@@ -60,6 +61,8 @@ pub const Options = struct {
     fill_rule: FillRule,
     anti_alias: bool,
     limits: Limits = .{},
+    /// A budget shared by several fills, in place of `limits.max_work` per fill.
+    work: ?*Work = null,
 };
 
 /// Owned by the allocator given to `fill`.
@@ -110,7 +113,8 @@ pub fn fill(allocator: Allocator, contours: []const []const Point, options: Opti
         point.* = .{ -original[1], original[0] };
     };
 
-    var tessellator: Tessellator = .{ .arena = arena, .limits = options.limits };
+    var own_work: Work = .{ .remaining = options.limits.max_work };
+    var tessellator: Tessellator = .{ .arena = arena, .limits = options.limits, .work = options.work orelse &own_work };
     var mesh: VertexList = .{};
     for (grid_contours) |grid_contour| try tessellator.buildContourEdges(try sanitizedContour(arena, grid_contour), &mesh);
     try tessellator.sortMesh(&mesh);
@@ -326,12 +330,11 @@ pub const Tessellator = struct {
     arena: Allocator,
     limits: Limits,
     edge_count: usize = 0,
-    work: u64 = 0,
+    work: *Work,
     merge_collinear_calls: u32 = 0,
 
     pub fn charge(tessellator: *Tessellator) error{TooComplex}!void {
-        if (tessellator.work >= tessellator.limits.max_work) return error.TooComplex;
-        tessellator.work += 1;
+        return tessellator.work.charge();
     }
 
     fn allocateEdge(tessellator: *Tessellator, top: *Vertex, bottom: *Vertex, winding: i32, kind: EdgeKind) InternalError!*Edge {
@@ -446,10 +449,14 @@ pub const Tessellator = struct {
             try tessellator.charge();
             vertex = vertex.prev.?;
             var below = vertex.first_edge_below;
-            while (below) |edge| : (below = edge.next_edge_below) assert(sweep.active.remove(edge));
+            while (below) |edge| : (below = edge.next_edge_below) {
+                try tessellator.charge();
+                assert(sweep.active.remove(edge));
+            }
             var left_edge = vertex.left_enclosing_edge;
             var above = vertex.first_edge_above;
             while (above) |edge| : (above = edge.next_edge_above) {
+                try tessellator.charge();
                 assert(sweep.active.insertAfter(edge, left_edge));
                 left_edge = edge;
                 const top = edge.top.?;
@@ -723,6 +730,7 @@ pub const Tessellator = struct {
                 const restart = if (vertex.first_edge_below) |first_below| restart: {
                     var below: ?*Edge = first_below;
                     while (below) |edge| : (below = edge.next_edge_below) {
+                        try tessellator.charge();
                         if (try tessellator.checkForIntersection(enclosing[0], edge, &sweep, mesh)) break :restart true;
                         if (try tessellator.checkForIntersection(edge, enclosing[1], &sweep, mesh)) break :restart true;
                     }
@@ -734,10 +742,14 @@ pub const Tessellator = struct {
             const vertex = sweep.current.?;
             if (std.debug.runtime_safety) validateActiveEdges(sweep.active);
             var above = vertex.first_edge_above;
-            while (above) |edge| : (above = edge.next_edge_above) assert(sweep.active.remove(edge));
+            while (above) |edge| : (above = edge.next_edge_above) {
+                try tessellator.charge();
+                assert(sweep.active.remove(edge));
+            }
             var left_edge = enclosing[0];
             var below = vertex.first_edge_below;
             while (below) |edge| : (below = edge.next_edge_below) {
+                try tessellator.charge();
                 assert(edge.isAlive());
                 assert(sweep.active.insertAfter(edge, left_edge));
                 left_edge = edge;
