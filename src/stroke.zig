@@ -10,7 +10,7 @@ const Point = tessellation.Point;
 const Vector = @Vector(2, f32);
 
 /// How far an outer miter point may lie outside the join circle, in the units of the polyline.
-const miter_overshoot = 0.1;
+const miter_overshoot = 0.03;
 
 /// Contours whose nonzero fill is the union of the edge quads and vertex discs of `polyline`
 /// stroked with `radius`, so one fill gives the stroke a single anti-aliased edge. A polyline whose
