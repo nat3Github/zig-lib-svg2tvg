@@ -100,8 +100,9 @@ const Outliner = struct {
         const outgoing_offset = outliner.leftOffset(vertex, next);
         var turn = math.atan2(incoming[0] * outgoing[1] - incoming[1] * outgoing[0], @reduce(.Add, incoming * outgoing));
         if (@abs(turn) > math.pi - 1e-3) turn = -math.pi;
+        const half_turn_cos = @cos(turn / 2);
         const miter_fits = if (turn < 0)
-            outliner.radius * (1 / @cos(turn / 2) - 1) <= miter_overshoot
+            outliner.radius * (1 - half_turn_cos) <= miter_overshoot * half_turn_cos
         else
             turn < math.pi / 2.0 and outliner.radius * @tan(turn / 2) <= @min(length(incoming), length(outgoing));
         if (miter_fits) {
