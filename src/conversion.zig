@@ -766,29 +766,172 @@ fn scaleForImage(width: f32, height: f32) Scale {
     return @fromBackingInt(@intCast(std.math.clamp(-unit_exponent, 0, 15)));
 }
 
-fn encode(gpa: Allocator, width: u32, height: u32, scale: Scale, range: Range, colors: []const Color, commands: []const DrawCommand) ![]const u8 {
+fn encode(gpa: Allocator, width: u32, height: u32, scale: Scale, range: Range, tolerance: f32, colors: []const Color, commands: []const DrawCommand) ![]const u8 {
     var writer: std.Io.Writer.Allocating = .init(gpa);
     defer writer.deinit();
+    var arcs = std.heap.ArenaAllocator.init(gpa);
+    defer arcs.deinit();
     var builder = tvg.builder.create(&writer.writer);
     try builder.writeHeader(width, height, scale, .u8888, range);
     try builder.writeColorTable(colors);
     for (commands) |command| switch (command) {
-        .fill_path => |data| try builder.writeFillPath(data.style, data.path.segments),
-        .draw_line_path => |data| try builder.writeDrawPath(data.style, data.line_width, data.path.segments),
-        .outline_fill_path => |data| try builder.writeOutlineFillPath(data.fill_style, data.line_style, data.line_width, data.path.segments),
+        .fill_path => |data| try builder.writeFillPath(data.style, try arcsFromBeziers(arcs.allocator(), data.path.segments, scale, tolerance)),
+        .draw_line_path => |data| try builder.writeDrawPath(data.style, data.line_width, try arcsFromBeziers(arcs.allocator(), data.path.segments, scale, tolerance)),
+        .outline_fill_path => |data| try builder.writeOutlineFillPath(data.fill_style, data.line_style, data.line_width, try arcsFromBeziers(arcs.allocator(), data.path.segments, scale, tolerance)),
         else => unreachable,
     };
     try builder.writeEndOfFile();
     return writer.toOwnedSlice();
 }
 
+/// The arrangement and the arc detection stay this many pixels close to the SVG geometry.
+/// A fixed fraction of the image looks alike at every display size. 1/4096 gives a circle
+/// spanning the image about 100 segments, as many as the reference renderer draws.
+fn toleranceForImage(width: f32, height: f32) f32 {
+    return @max(width, height) / 4096;
+}
+
+const UnitVector = [2]f64;
+
+fn unitVector(scale: Scale, point: Point) !UnitVector {
+    return .{ @floatFromInt((try scale.map(point.x)).raw()), @floatFromInt((try scale.map(point.y)).raw()) };
+}
+
+fn cross(a: UnitVector, b: UnitVector) f64 {
+    return a[0] * b[1] - a[1] * b[0];
+}
+
+fn difference(a: UnitVector, b: UnitVector) UnitVector {
+    return .{ a[0] - b[0], a[1] - b[1] };
+}
+
+/// Larger radii stay Béziers, the arc radius has to fit the 16 bit range like the coordinates.
+const arc_max_radius_units = math.maxInt(i16);
+/// Bounds the quadratic cost of growing a run of Béziers into one arc.
+const arc_max_beziers = 16;
+const arc_samples_per_bezier = 32;
+
+/// Every cubic Bézier, or run of them, that stays within `tolerance` pixels of a circle arc of
+/// less than a full turn becomes one `arc_circle`. Checked after rounding to the units of
+/// `scale`, against the arc rendering.circleArc draws.
+pub fn arcsFromBeziers(arena: Allocator, segments: []const Segment, scale: Scale, tolerance: f32) ![]const Segment {
+    assert(tolerance > 0);
+    const result = try arena.alloc(Segment, segments.len);
+    for (result, segments) |*out, segment| {
+        var nodes: std.ArrayList(Node) = .empty;
+        const start = try unitVector(scale, segment.start);
+        var current = start;
+        var index: usize = 0;
+        while (index < segment.commands.len) {
+            var arc: ?Node = null;
+            var bezier_count: usize = 0;
+            if (segment.commands[index] == .bezier) {
+                const fit = try circleThroughBezier(scale, current, segment.commands[index].bezier.data);
+                if (fit) |circle| {
+                    const run_end = @min(segment.commands.len, index + arc_max_beziers);
+                    for (segment.commands[index..run_end], 1..) |node, count| {
+                        if (node != .bezier or (count > 1 and node.bezier.line_width != null)) break;
+                        arc = try arcAlongBeziers(scale, tolerance, current, circle, segment.commands[index..][0..count]) orelse break;
+                        bezier_count = count;
+                    }
+                }
+            }
+            const node = if (arc) |found| found else segment.commands[index];
+            index += @max(1, bezier_count);
+            try nodes.append(arena, node);
+            current = switch (node) {
+                .line => |data| try unitVector(scale, data.data),
+                .horiz => |data| .{ @floatFromInt((try scale.map(data.data)).raw()), current[1] },
+                .vert => |data| .{ current[0], @floatFromInt((try scale.map(data.data)).raw()) },
+                .bezier => |data| try unitVector(scale, data.data.p1),
+                .quadratic_bezier => |data| try unitVector(scale, data.data.p1),
+                .arc_circle => |data| try unitVector(scale, data.data.target),
+                .arc_ellipse => |data| try unitVector(scale, data.data.target),
+                .close => start,
+            };
+        }
+        out.* = .{ .start = segment.start, .commands = nodes.items };
+    }
+    return result;
+}
+
+const FittedCircle = struct { radius: f64, sweep: bool };
+
+/// The circle through both ends of the Bézier that is tangent to it at the start, in units.
+fn circleThroughBezier(scale: Scale, p0: UnitVector, bezier: Node.Bezier) !?FittedCircle {
+    const c0 = try unitVector(scale, bezier.c0);
+    const p1 = try unitVector(scale, bezier.p1);
+    var tangent = difference(c0, p0);
+    if (tangent[0] == 0 and tangent[1] == 0) tangent = difference(try unitVector(scale, bezier.c1), p0);
+    const chord = difference(p1, p0);
+    const normal: UnitVector = .{ -tangent[1], tangent[0] };
+    const normal_along_chord = 2 * (normal[0] * chord[0] + normal[1] * chord[1]);
+    if (normal_along_chord == 0) return null;
+    const center_distance = (chord[0] * chord[0] + chord[1] * chord[1]) / normal_along_chord;
+    const radius = @abs(center_distance) * @sqrt(normal[0] * normal[0] + normal[1] * normal[1]);
+    if (!(radius >= 1 and radius <= arc_max_radius_units)) return null;
+    // A center to the right of the tangent turns the arc counterclockwise on screen, rendering's turn_left.
+    return .{ .radius = radius, .sweep = center_distance < 0 };
+}
+
+/// The arc from `p0` to the end of `beziers` on `circle`, if every sample of the Béziers lies
+/// within `tolerance` pixels of the arc renderCircle draws and moves along it in its direction.
+fn arcAlongBeziers(scale: Scale, tolerance: f32, p0: UnitVector, circle: FittedCircle, beziers: []const Node) !?Node {
+    assert(beziers.len > 0);
+    const factor: f64 = @floatFromInt(scale.getScaleFactor());
+    const tolerance_units = tolerance * factor;
+    const target = beziers[beziers.len - 1].bezier.data.p1;
+    const p1 = try unitVector(scale, target);
+    if (p1[0] == p0[0] and p1[1] == p0[1]) return null;
+    const radius_units = @round(circle.radius);
+    assert(radius_units >= 1 and radius_units <= arc_max_radius_units);
+    const p0_pixel: Point = .{ .x = @floatCast(p0[0] / factor), .y = @floatCast(p0[1] / factor) };
+    const p1_pixel: Point = .{ .x = @floatCast(p1[0] / factor), .y = @floatCast(p1[1] / factor) };
+    if (p0_pixel.x == p1_pixel.x and p0_pixel.y == p1_pixel.y) return null;
+    for ([_]bool{ false, true }) |large_arc| {
+        const drawn = tvg.rendering.circleArc(p0_pixel, p1_pixel, @floatCast(radius_units / factor), large_arc, circle.sweep);
+        const center: UnitVector = .{ drawn.center.x * factor, drawn.center.y * factor };
+        var previous = difference(p0, center);
+        const drawn_radius = @sqrt(previous[0] * previous[0] + previous[1] * previous[1]);
+        const direction: f64 = if (circle.sweep) -1 else 1;
+        var turned: f64 = 0;
+        var start = p0;
+        const on_arc = samples: for (beziers) |node| {
+            const controls = [4]UnitVector{ start, try unitVector(scale, node.bezier.data.c0), try unitVector(scale, node.bezier.data.c1), try unitVector(scale, node.bezier.data.p1) };
+            for (1..arc_samples_per_bezier + 1) |sample| {
+                const radial = difference(cubicAt(controls, @as(f64, @floatFromInt(sample)) / arc_samples_per_bezier), center);
+                const step = direction * math.atan2(cross(previous, radial), previous[0] * radial[0] + previous[1] * radial[1]);
+                const distance = @sqrt(radial[0] * radial[0] + radial[1] * radial[1]);
+                if (step < 0 or @abs(distance - drawn_radius) > tolerance_units) break :samples false;
+                turned += step;
+                previous = radial;
+            }
+            start = controls[3];
+        } else true;
+        if (on_arc and drawn_radius * @abs(turned - drawn.arc) <= tolerance_units) return .{ .arc_circle = .init(beziers[0].bezier.line_width, .{
+            .radius = @floatCast(radius_units / factor),
+            .large_arc = large_arc,
+            .sweep = circle.sweep,
+            .target = target,
+        }) };
+    }
+    return null;
+}
+
+fn cubicAt(controls: [4]UnitVector, t: f64) UnitVector {
+    const u = 1 - t;
+    var result: UnitVector = undefined;
+    for (&result, 0..) |*coordinate, axis| {
+        coordinate.* = u * u * u * controls[0][axis] + 3 * u * u * t * controls[1][axis] + 3 * u * t * t * controls[2][axis] + t * t * t * controls[3][axis];
+    }
+    return result;
+}
+
 /// TinyVG fills every path even-odd. Returns segments whose even-odd fill is the nonzero fill of
 /// `pathlist`: the path itself if both rules agree, without the contours between two filled
 /// regions if no edges touch, otherwise the flattened boundary of the filled regions.
 fn even_odd_segments_for_nonzero(self: *const @This(), arena_alloc: Allocator, pathlist: []Segment, work: *arrangement.Work) ![]const Segment {
-    // A fixed fraction of the image looks alike at every display size. 1/4096 gives a circle
-    // spanning the image about 100 segments, as many as the reference renderer draws.
-    const tolerance = @max(self.svg.width.?, self.svg.height.?) / 4096;
+    const tolerance = toleranceForImage(self.svg.width.?, self.svg.height.?);
     const limits: arrangement.Limits = .{};
     const contours = try arrangement.flattenSegments(arena_alloc, pathlist, self.scale, tolerance, limits.max_edges);
     assert(contours.count() == pathlist.len);
@@ -1023,15 +1166,16 @@ pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]con
     for (colors, recorder.colors.keys()) |*color, key| color.* = key.toColor();
     // Finest unit whose 16 bit range spans the image, coarser down to the arrangement grid while values overflow.
     const larger_side: f32 = @floatFromInt(@max(sw, sh));
+    const tolerance = toleranceForImage(svg.width.?, svg.height.?);
     var unit_exponent: u4 = math.maxInt(u4);
     while (unit_exponent > @backingInt(popts.scale) and larger_side * @as(f32, @floatFromInt(@as(u16, 1) << unit_exponent)) > math.maxInt(i16)) unit_exponent -= 1;
     while (true) : (unit_exponent -= 1) {
-        return encode(gpa, sw, sh, @fromBackingInt(unit_exponent), .default, colors, recorder.commands.items) catch |err| switch (err) {
+        return encode(gpa, sw, sh, @fromBackingInt(unit_exponent), .default, tolerance, colors, recorder.commands.items) catch |err| switch (err) {
             error.OutOfRange => if (unit_exponent > @backingInt(popts.scale)) continue else break,
             else => |other| other,
         };
     }
-    return encode(gpa, sw, sh, popts.scale, .enhanced, colors, recorder.commands.items);
+    return encode(gpa, sw, sh, popts.scale, .enhanced, tolerance, colors, recorder.commands.items);
 }
 fn log_seg(segs: []const Segment) void {
     std.log.warn("PRINT SEG BEGIN", .{});
