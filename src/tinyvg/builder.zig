@@ -25,6 +25,20 @@ pub fn create(writer: anytype) Builder(@TypeOf(writer)) {
 //   line_style
 //   line_width
 
+/// Every unit a Builder wrote at its `scale`, before the output shift.
+pub const WrittenUnits = struct {
+    bits: i32 = 0,
+    min: i32 = 0,
+    max: i32 = 0,
+
+    /// Largest output shift at most `max_shift` that keeps every unit exact and within i8.
+    pub fn reducedShift(written_units: WrittenUnits, max_shift: u4) ?u4 {
+        const shift: u4 = @intCast(@min(@ctz(written_units.bits), max_shift));
+        if (written_units.min >> shift < std.math.minInt(i8) or written_units.max >> shift > std.math.maxInt(i8)) return null;
+        return shift;
+    }
+};
+
 pub fn Builder(comptime Writer: type) type {
     return struct {
         const Self = @This();
@@ -37,15 +51,20 @@ pub fn Builder(comptime Writer: type) type {
         scale: tvg.Scale = undefined,
         range: tvg.Range = undefined,
         color_encoding: tvg.ColorEncoding = undefined,
+        /// Units are chosen at `scale` and written divided by 2^output_shift at the coarser header scale.
+        /// Every unit must be a multiple of 2^output_shift, the file then decodes to the same values.
+        output_shift: u4 = 0,
+        written_units: WrittenUnits = .{},
 
         pub fn writeHeader(self: *Self, width: u32, height: u32, scale: tvg.Scale, color_encoding: tvg.ColorEncoding, range: tvg.Range) Error!void {
             errdefer self.state = .faulted;
             std.debug.assert(self.state == .initial);
+            std.debug.assert(self.output_shift <= @backingInt(scale));
 
             try self.writer.writeAll(&[_]u8{
                 0x72, 0x56, // magic
                 tvg.current_version, // version
-                @backingInt(scale) | (@as(u8, @backingInt(color_encoding)) << 4) | (@as(u8, @backingInt(range)) << 6),
+                (@backingInt(scale) - self.output_shift) | (@as(u8, @backingInt(color_encoding)) << 4) | (@as(u8, @backingInt(range)) << 6),
             });
             switch (range) {
                 .reduced => {
@@ -437,7 +456,12 @@ pub fn Builder(comptime Writer: type) type {
         }
 
         fn writeUnit(self: *Self, value: f32) Error!void {
-            const val = (try self.scale.map(value)).raw();
+            const unshifted = (try self.scale.map(value)).raw();
+            self.written_units.bits |= unshifted;
+            self.written_units.min = @min(self.written_units.min, unshifted);
+            self.written_units.max = @max(self.written_units.max, unshifted);
+            if (@ctz(unshifted) < self.output_shift) return error.OutOfRange;
+            const val = unshifted >> self.output_shift;
             switch (self.range) {
                 .reduced => {
                     const reduced_val = std.math.cast(i8, val) orelse return error.OutOfRange;

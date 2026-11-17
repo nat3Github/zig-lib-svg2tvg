@@ -26,6 +26,7 @@ const NodeData = Path.Node.NodeData;
 const Point = tvg.Point;
 const Scale = tvg.Scale;
 const Range = tvg.Range;
+const WrittenUnits = tvg.builder.WrittenUnits;
 const Style = tvg.Style;
 
 const WidthHeight = struct {
@@ -766,13 +767,16 @@ fn scaleForImage(width: f32, height: f32) Scale {
     return @fromBackingInt(@intCast(std.math.clamp(-unit_exponent, 0, 15)));
 }
 
-fn encode(gpa: Allocator, width: u32, height: u32, scale: Scale, range: Range, tolerance: f32, colors: []const Color, commands: []const DrawCommand) ![]const u8 {
+const Encoding = struct { range: Range, output_shift: u4 = 0 };
+
+fn encode(gpa: Allocator, width: u32, height: u32, scale: Scale, encoding: Encoding, tolerance: f32, colors: []const Color, commands: []const DrawCommand, written_units: ?*WrittenUnits) ![]const u8 {
     var writer: std.Io.Writer.Allocating = .init(gpa);
     defer writer.deinit();
     var arcs = std.heap.ArenaAllocator.init(gpa);
     defer arcs.deinit();
     var builder = tvg.builder.create(&writer.writer);
-    try builder.writeHeader(width, height, scale, .u8888, range);
+    builder.output_shift = encoding.output_shift;
+    try builder.writeHeader(width, height, scale, .u8888, encoding.range);
     try builder.writeColorTable(colors);
     for (commands) |command| switch (command) {
         .fill_path => |data| try builder.writeFillPath(data.style, try arcsFromBeziers(arcs.allocator(), data.path.segments, scale, tolerance)),
@@ -781,6 +785,7 @@ fn encode(gpa: Allocator, width: u32, height: u32, scale: Scale, range: Range, t
         else => unreachable,
     };
     try builder.writeEndOfFile();
+    if (written_units) |units| units.* = builder.written_units;
     return writer.toOwnedSlice();
 }
 
@@ -1170,12 +1175,21 @@ pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]con
     var unit_exponent: u4 = math.maxInt(u4);
     while (unit_exponent > @backingInt(popts.scale) and larger_side * @as(f32, @floatFromInt(@as(u16, 1) << unit_exponent)) > math.maxInt(i16)) unit_exponent -= 1;
     while (true) : (unit_exponent -= 1) {
-        return encode(gpa, sw, sh, @fromBackingInt(unit_exponent), .default, tolerance, colors, recorder.commands.items) catch |err| switch (err) {
+        var written_units: WrittenUnits = .{};
+        const default_bytes = encode(gpa, sw, sh, @fromBackingInt(unit_exponent), .{ .range = .default }, tolerance, colors, recorder.commands.items, &written_units) catch |err| switch (err) {
             error.OutOfRange => if (unit_exponent > @backingInt(popts.scale)) continue else break,
+            else => |other| return other,
+        };
+        // Same units at a coarser scale, one byte each, when they all lie on its grid.
+        if (sw > 256 or sh > 256) return default_bytes;
+        const output_shift = written_units.reducedShift(unit_exponent) orelse return default_bytes;
+        defer gpa.free(default_bytes);
+        return encode(gpa, sw, sh, @fromBackingInt(unit_exponent), .{ .range = .reduced, .output_shift = output_shift }, tolerance, colors, recorder.commands.items, null) catch |err| switch (err) {
+            error.OutOfRange => unreachable,
             else => |other| other,
         };
     }
-    return encode(gpa, sw, sh, popts.scale, .enhanced, tolerance, colors, recorder.commands.items);
+    return encode(gpa, sw, sh, popts.scale, .{ .range = .enhanced }, tolerance, colors, recorder.commands.items, null);
 }
 fn log_seg(segs: []const Segment) void {
     std.log.warn("PRINT SEG BEGIN", .{});
