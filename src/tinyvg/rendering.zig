@@ -727,7 +727,27 @@ pub fn renderCircle(
     end_width: f32,
 ) !void {
     if (p1.x == p0.x and p1.y == p0.y) return;
+    const circle = circleArc(p0, p1, radius, large_arc, turn_left);
+
+    assert(circle_divs != 0);
+    const pos = sub(p0, circle.center);
+    for (0..circle_divs - 1) |i| {
+        const step_mat = rotationMat(@as(f32, @floatFromInt(i)) * (if (turn_left) -circle.arc else circle.arc) / circle_divs);
+        const point = add(applyMat(step_mat, pos), circle.center);
+
+        try point_list.append(point, lerp(start_width, end_width, @as(f32, @floatFromInt(i)) / circle_divs));
+    }
+
+    try point_list.append(p1, end_width);
+}
+
+pub const CircleArc = struct { center: Point, arc: f32 };
+
+/// Center and swept angle of the arc renderCircle draws from `p0` to `p1`: turning `p0` around
+/// the center by `arc`, clockwise on screen unless `turn_left`.
+pub fn circleArc(p0: Point, p1: Point, radius: f32, large_arc: bool, turn_left: bool) CircleArc {
     assert(radius != 0);
+    assert(p1.x != p0.x or p1.y != p0.y);
     var r = radius;
 
     // Whether the center should be to the left of the vector from p0 to p1
@@ -754,18 +774,7 @@ pub fn renderCircle(
 
     assert(r != 0);
     const angle = std.math.asin(std.math.clamp(sqrt(len_squared) / r, -1.0, 1.0)) * 2;
-    const arc = if (large_arc) (std.math.tau - angle) else angle;
-
-    assert(circle_divs != 0);
-    const pos = sub(p0, center);
-    for (0..circle_divs - 1) |i| {
-        const step_mat = rotationMat(@as(f32, @floatFromInt(i)) * (if (turn_left) -arc else arc) / circle_divs);
-        const point = add(applyMat(step_mat, pos), center);
-
-        try point_list.append(point, lerp(start_width, end_width, @as(f32, @floatFromInt(i)) / circle_divs));
-    }
-
-    try point_list.append(p1, end_width);
+    return .{ .center = center, .arc = if (large_arc) (std.math.tau - angle) else angle };
 }
 
 fn rotationMat(angle: f32) [2][2]f32 {
