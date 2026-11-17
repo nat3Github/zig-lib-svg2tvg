@@ -716,6 +716,59 @@ const Recorder = struct {
     }
 };
 
+const Bounds = struct {
+    min: Point,
+    max: Point,
+
+    fn around(point: Point, reach: f32) Bounds {
+        return .{ .min = .{ .x = point.x - reach, .y = point.y - reach }, .max = .{ .x = point.x + reach, .y = point.y + reach } };
+    }
+
+    fn unite(a: Bounds, b: Bounds) Bounds {
+        return .{ .min = .{ .x = @min(a.min.x, b.min.x), .y = @min(a.min.y, b.min.y) }, .max = .{ .x = @max(a.max.x, b.max.x), .y = @max(a.max.y, b.max.y) } };
+    }
+
+    /// A pixel between both keeps their anti-aliasing ramps apart too.
+    fn separatedFrom(a: Bounds, b: Bounds) bool {
+        return a.max.x + 1 <= b.min.x or b.max.x + 1 <= a.min.x or a.max.y + 1 <= b.min.y or b.max.y + 1 <= a.min.y;
+    }
+};
+
+/// Box around everything the segments cover: Bézier control hulls, a circle arc within twice its
+/// radius of its start, the radius grows to half the chord when too small. Null with elliptic arcs.
+fn segmentsBounds(segments: []const Segment) ?Bounds {
+    assert(segments.len > 0);
+    var bounds: Bounds = .around(segments[0].start, 0);
+    for (segments) |segment| {
+        var current = segment.start;
+        bounds = bounds.unite(.around(current, 0));
+        for (segment.commands) |node| {
+            switch (node) {
+                .line => |data| current = data.data,
+                .horiz => |data| current.x = data.data,
+                .vert => |data| current.y = data.data,
+                .bezier => |data| {
+                    bounds = bounds.unite(.around(data.data.c0, 0)).unite(.around(data.data.c1, 0));
+                    current = data.data.p1;
+                },
+                .quadratic_bezier => |data| {
+                    bounds = bounds.unite(.around(data.data.c, 0));
+                    current = data.data.p1;
+                },
+                .arc_circle => |data| {
+                    const chord = @sqrt((data.data.target.x - current.x) * (data.data.target.x - current.x) + (data.data.target.y - current.y) * (data.data.target.y - current.y));
+                    bounds = bounds.unite(.around(current, @max(2 * data.data.radius, chord)));
+                    current = data.data.target;
+                },
+                .arc_ellipse => return null,
+                .close => current = segment.start,
+            }
+            bounds = bounds.unite(.around(current, 0));
+        }
+    }
+    return bounds;
+}
+
 /// outline_fill_path stores its segment count in 6 bits.
 const outline_fill_max_segments = 64;
 
@@ -778,15 +831,67 @@ fn encode(gpa: Allocator, width: u32, height: u32, scale: Scale, encoding: Encod
     builder.output_shift = encoding.output_shift;
     try builder.writeHeader(width, height, scale, .u8888, encoding.range);
     try builder.writeColorTable(colors);
-    for (commands) |command| switch (command) {
-        .fill_path => |data| try builder.writeFillPath(data.style, try arcsFromBeziers(arcs.allocator(), data.path.segments, scale, tolerance)),
-        .draw_line_path => |data| try builder.writeDrawPath(data.style, data.line_width, try arcsFromBeziers(arcs.allocator(), data.path.segments, scale, tolerance)),
-        .outline_fill_path => |data| try builder.writeOutlineFillPath(data.fill_style, data.line_style, data.line_width, try arcsFromBeziers(arcs.allocator(), data.path.segments, scale, tolerance)),
-        else => unreachable,
-    };
+    var start: usize = 0;
+    while (start < commands.len) {
+        const end = try mergedEnd(scale, colors, commands, start);
+        var segments: std.ArrayList(Segment) = .empty;
+        for (commands[start..end]) |command| {
+            const path = switch (command) {
+                inline .fill_path, .draw_line_path, .outline_fill_path => |data| data.path,
+                else => unreachable,
+            };
+            try segments.appendSlice(arcs.allocator(), try arcsFromBeziers(arcs.allocator(), path.segments, scale, tolerance));
+        }
+        switch (commands[start]) {
+            .fill_path => |data| try builder.writeFillPath(data.style, segments.items),
+            .draw_line_path => |data| try builder.writeDrawPath(data.style, data.line_width, segments.items),
+            .outline_fill_path => |data| try builder.writeOutlineFillPath(data.fill_style, data.line_style, data.line_width, segments.items),
+            else => unreachable,
+        }
+        start = end;
+    }
     try builder.writeEndOfFile();
     if (written_units) |units| units.* = builder.written_units;
     return writer.toOwnedSlice();
+}
+
+/// End of the run of commands from `start` that one command draws the same: opaque strokes of
+/// the same style and width in units, painting an overlap twice gives the same color, and fills of
+/// the same style whose boxes stay apart, so the even-odd rule covers no area twice.
+fn mergedEnd(scale: Scale, colors: []const Color, commands: []const DrawCommand, start: usize) !usize {
+    var end = start + 1;
+    switch (commands[start]) {
+        .draw_line_path => |first| {
+            const color_index = switch (first.style) {
+                .flat => |index| index,
+                else => return end,
+            };
+            if (colors[color_index].a != 1) return end;
+            const width_units = (try scale.map(first.line_width)).raw();
+            while (end < commands.len) : (end += 1) {
+                const next = switch (commands[end]) {
+                    .draw_line_path => |data| data,
+                    else => break,
+                };
+                if (!std.meta.eql(next.style, first.style) or (try scale.map(next.line_width)).raw() != width_units) break;
+            }
+        },
+        .fill_path => |first| {
+            var bounds = segmentsBounds(first.path.segments) orelse return end;
+            while (end < commands.len) : (end += 1) {
+                const next = switch (commands[end]) {
+                    .fill_path => |data| data,
+                    else => break,
+                };
+                if (!std.meta.eql(next.style, first.style)) break;
+                const next_bounds = segmentsBounds(next.path.segments) orelse break;
+                if (!bounds.separatedFrom(next_bounds)) break;
+                bounds = bounds.unite(next_bounds);
+            }
+        },
+        else => {},
+    }
+    return end;
 }
 
 /// The arrangement and the arc detection stay this many pixels close to the SVG geometry.
