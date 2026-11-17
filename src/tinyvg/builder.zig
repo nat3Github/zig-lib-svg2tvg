@@ -283,12 +283,51 @@ pub fn Builder(comptime Writer: type) type {
             return .{ (try self.scale.map(point.x)).raw(), (try self.scale.map(point.y)).raw() };
         }
 
+        /// A cubic Bézier from `previous` whose controls lie in order on the straight edge becomes
+        /// a line, a raised quadratic (c0 = p0 + 2/3 (q - p0), c1 = p1 + 2/3 (q - p1)) whose q is
+        /// a whole unit becomes that quadratic. Both draw the same curve in units of the scale.
+        fn exactCurve(self: *const Self, previous: UnitPoint, node: tvg.Path.Node) Error!tvg.Path.Node {
+            const bezier = switch (node) {
+                .bezier => |data| data,
+                else => return node,
+            };
+            const p0: [2]i128 = .{ previous[0], previous[1] };
+            const c0_units = try self.unitPoint(bezier.data.c0);
+            const c1_units = try self.unitPoint(bezier.data.c1);
+            const p1_units = try self.unitPoint(bezier.data.p1);
+            const c0: [2]i128 = .{ c0_units[0], c0_units[1] };
+            const c1: [2]i128 = .{ c1_units[0], c1_units[1] };
+            const p1: [2]i128 = .{ p1_units[0], p1_units[1] };
+            const chord: [2]i128 = .{ p1[0] - p0[0], p1[1] - p0[1] };
+            const to_c0: [2]i128 = .{ c0[0] - p0[0], c0[1] - p0[1] };
+            const to_c1: [2]i128 = .{ c1[0] - p0[0], c1[1] - p0[1] };
+            const on_chord = chord[0] * to_c0[1] == chord[1] * to_c0[0] and chord[0] * to_c1[1] == chord[1] * to_c1[0];
+            const along_c0 = chord[0] * to_c0[0] + chord[1] * to_c0[1];
+            const along_c1 = chord[0] * to_c1[0] + chord[1] * to_c1[1];
+            const chord_length2 = chord[0] * chord[0] + chord[1] * chord[1];
+            if (chord_length2 > 0 and on_chord and 0 <= along_c0 and along_c0 <= along_c1 and along_c1 <= chord_length2) {
+                return .{ .line = .init(bezier.line_width, bezier.data.p1) };
+            }
+            const twice_q: [2]i128 = .{ 3 * c0[0] - p0[0], 3 * c0[1] - p0[1] };
+            if (twice_q[0] != 3 * c1[0] - p1[0] or twice_q[1] != 3 * c1[1] - p1[1]) return node;
+            if (@mod(twice_q[0], 2) != 0 or @mod(twice_q[1], 2) != 0) return node;
+            // Beyond 2^24 units a float no longer holds every unit.
+            const q: [2]i32 = .{
+                std.math.cast(i24, @divExact(twice_q[0], 2)) orelse return node,
+                std.math.cast(i24, @divExact(twice_q[1], 2)) orelse return node,
+            };
+            const factor: f32 = @floatFromInt(self.scale.getScaleFactor());
+            const control: tvg.Point = .{ .x = @as(f32, @floatFromInt(q[0])) / factor, .y = @as(f32, @floatFromInt(q[1])) / factor };
+            std.debug.assert(std.mem.eql(i32, &(try self.unitPoint(control)), &q));
+            return .{ .quadratic_bezier = .init(bezier.line_width, .{ .c = control, .p1 = bezier.data.p1 }) };
+        }
+
         /// The shortest node that draws the same as `nodes[index]` in units of the scale: a line
         /// keeping x or y becomes vert or horiz, a line to the segment start right before `close`
         /// is null because `close` draws the same edge. Moves `current` to the end of the node.
         fn compactNode(self: *const Self, start: UnitPoint, current: *UnitPoint, nodes: []const tvg.Path.Node, index: usize) Error!?tvg.Path.Node {
-            const node = nodes[index];
             const previous = current.*;
+            const node = try self.exactCurve(previous, nodes[index]);
             current.* = switch (node) {
                 .line => |data| try self.unitPoint(data.data),
                 .horiz => |data| .{ (try self.scale.map(data.data)).raw(), previous[1] },
