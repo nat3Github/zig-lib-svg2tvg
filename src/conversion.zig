@@ -1053,10 +1053,17 @@ pub fn tvg_from_svg(gpa: Allocator, svg_document: []const u8, opts: @This()) ![]
     }
     const colors = try recorded.allocator().alloc(Color, recorder.colors.count());
     for (colors, recorder.colors.keys()) |*color, key| color.* = key.toColor();
-    return encode(gpa, sw, sh, popts.scale, .default, colors, recorder.commands.items) catch |err| switch (err) {
-        error.OutOfRange => encode(gpa, sw, sh, popts.scale, .enhanced, colors, recorder.commands.items),
-        else => |other| other,
-    };
+    // Finest unit whose 16 bit range spans the image, coarser down to the arrangement grid while values overflow.
+    const larger_side: f32 = @floatFromInt(@max(sw, sh));
+    var unit_exponent: u4 = math.maxInt(u4);
+    while (unit_exponent > @backingInt(popts.scale) and larger_side * @as(f32, @floatFromInt(@as(u16, 1) << unit_exponent)) > math.maxInt(i16)) unit_exponent -= 1;
+    while (true) : (unit_exponent -= 1) {
+        return encode(gpa, sw, sh, @fromBackingInt(unit_exponent), .default, colors, recorder.commands.items) catch |err| switch (err) {
+            error.OutOfRange => if (unit_exponent > @backingInt(popts.scale)) continue else break,
+            else => |other| other,
+        };
+    }
+    return encode(gpa, sw, sh, popts.scale, .enhanced, colors, recorder.commands.items);
 }
 fn log_seg(segs: []const Segment) void {
     std.log.warn("PRINT SEG BEGIN", .{});
