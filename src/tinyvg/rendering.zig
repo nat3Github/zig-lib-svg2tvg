@@ -731,7 +731,7 @@ pub fn renderCircle(
 
     assert(circle_divs != 0);
     const pos = sub(p0, circle.center);
-    for (0..circle_divs - 1) |i| {
+    for (1..circle_divs) |i| {
         const step_mat = rotationMat(@as(f32, @floatFromInt(i)) * (if (turn_left) -circle.arc else circle.arc) / circle_divs);
         const point = add(applyMat(step_mat, pos), circle.center);
 
