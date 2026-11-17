@@ -277,14 +277,59 @@ pub fn Builder(comptime Writer: type) type {
             };
         }
 
+        const UnitPoint = [2]i32;
+
+        fn unitPoint(self: *const Self, point: tvg.Point) Error!UnitPoint {
+            return .{ (try self.scale.map(point.x)).raw(), (try self.scale.map(point.y)).raw() };
+        }
+
+        /// The shortest node that draws the same as `nodes[index]` in units of the scale: a line
+        /// keeping x or y becomes vert or horiz, a line to the segment start right before `close`
+        /// is null because `close` draws the same edge. Moves `current` to the end of the node.
+        fn compactNode(self: *const Self, start: UnitPoint, current: *UnitPoint, nodes: []const tvg.Path.Node, index: usize) Error!?tvg.Path.Node {
+            const node = nodes[index];
+            const previous = current.*;
+            current.* = switch (node) {
+                .line => |data| try self.unitPoint(data.data),
+                .horiz => |data| .{ (try self.scale.map(data.data)).raw(), previous[1] },
+                .vert => |data| .{ previous[0], (try self.scale.map(data.data)).raw() },
+                .bezier => |data| try self.unitPoint(data.data.p1),
+                .quadratic_bezier => |data| try self.unitPoint(data.data.p1),
+                .arc_circle => |data| try self.unitPoint(data.data.target),
+                .arc_ellipse => |data| try self.unitPoint(data.data.target),
+                .close => start,
+            };
+            const line_width = switch (node) {
+                .line => |data| data.line_width,
+                .horiz, .vert => |data| data.line_width,
+                else => return node,
+            };
+            const closes_next = index + 1 < nodes.len and nodes[index + 1] == .close and nodes[index + 1].close.line_width == null;
+            if (line_width == null and closes_next and std.mem.eql(i32, &current.*, &start)) return null;
+            if (node != .line) return node;
+            if (current[1] == previous[1]) return .{ .horiz = .init(line_width, node.line.data.x) };
+            if (current[0] == previous[0]) return .{ .vert = .init(line_width, node.line.data.y) };
+            return node;
+        }
+
         fn writePath(self: *Self, path: []const tvg.Path.Segment) !void {
             for (path) |item| {
                 std.debug.assert(item.commands.len > 0);
-                try self.writeUint(@intCast(item.commands.len - 1));
+                const start = try self.unitPoint(item.start);
+                var current = start;
+                var kept: u32 = 0;
+                for (0..item.commands.len) |index| {
+                    if (try self.compactNode(start, &current, item.commands, index) != null) kept += 1;
+                }
+                std.debug.assert(kept > 0);
+                try self.writeUint(kept - 1);
             }
             for (path) |item| {
                 try self.writePoint(item.start);
-                for (item.commands) |node| {
+                const start = try self.unitPoint(item.start);
+                var current = start;
+                for (0..item.commands.len) |index| {
+                    const node = try self.compactNode(start, &current, item.commands, index) orelse continue;
                     const kind: u8 = @backingInt(std.meta.activeTag(node));
 
                     const line_width = switch (node) {
