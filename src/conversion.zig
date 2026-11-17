@@ -827,38 +827,7 @@ fn even_odd_segments_for_nonzero(self: *const @This(), arena_alloc: Allocator, p
     return segments;
 }
 
-/// zig-xml rejects a DOCTYPE and every declared encoding but UTF-8, editors like Illustrator write
-/// both. Returns the bytes from the first element on, or from the first byte the prolog grammar
-/// does not cover, which the XML reader then reports.
-fn skipXmlProlog(svg_bytes: []const u8) []const u8 {
-    var rest = svg_bytes;
-    if (std.mem.startsWith(u8, rest, "\xEF\xBB\xBF")) rest = rest[3..];
-    while (true) {
-        rest = std.mem.trimStart(u8, rest, " \t\r\n");
-        if (std.mem.startsWith(u8, rest, "<?")) {
-            const end = std.mem.indexOf(u8, rest, "?>") orelse return rest;
-            rest = rest[end + 2 ..];
-        } else if (std.mem.startsWith(u8, rest, "<!--")) {
-            const end = std.mem.indexOfPos(u8, rest, 4, "-->") orelse return rest;
-            rest = rest[end + 3 ..];
-        } else if (std.mem.startsWith(u8, rest, "<!DOCTYPE")) {
-            var index: usize = "<!DOCTYPE".len;
-            var in_internal_subset = false;
-            while (index < rest.len) : (index += 1) switch (rest[index]) {
-                '"', '\'' => |quote| index = std.mem.indexOfScalarPos(u8, rest, index + 1, quote) orelse return rest,
-                '[' => in_internal_subset = true,
-                ']' => in_internal_subset = false,
-                '>' => if (!in_internal_subset) break,
-                else => {},
-            } else return rest;
-            assert(rest[index] == '>');
-            rest = rest[index + 1 ..];
-        } else return rest;
-    }
-}
-
-pub fn parse_svg(gpa: Allocator, svg_document: []const u8) !Svg {
-    const svg_bytes = skipXmlProlog(svg_document);
+pub fn parse_svg(gpa: Allocator, svg_bytes: []const u8) !Svg {
     // xml.Reader.Streaming.init asserts a reader buffer of at least 2 bytes.
     if (svg_bytes.len < 2) return error.InvalidSvg;
     var arena = std.heap.ArenaAllocator.init(gpa);
@@ -905,10 +874,9 @@ pub fn parse_svg(gpa: Allocator, svg_document: []const u8) !Svg {
     return svg;
 }
 
-pub fn tvg_from_svg(gpa: Allocator, svg_document: []const u8, opts: @This()) ![]const u8 {
+pub fn tvg_from_svg(gpa: Allocator, svg_bytes: []const u8, opts: @This()) ![]const u8 {
     var popts = opts;
-    const svg = try parse_svg(gpa, svg_document);
-    const svg_bytes = skipXmlProlog(svg_document);
+    const svg = try parse_svg(gpa, svg_bytes);
     popts.svg = svg;
     popts.scale = scaleForImage(svg.width.?, svg.height.?);
     var recorded = std.heap.ArenaAllocator.init(gpa);

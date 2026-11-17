@@ -5,8 +5,8 @@
     .version = "0.0.0",
     .dependencies = .{
         .xml = .{
-            .url = "git+https://github.com/ianprime0509/zig-xml#4beab29d68ab308af4bd12a4fc4187c24fdad0d6",
-            .hash = "xml-0.2.2-ZTbP35N4AgAN3HBgWmBp_LAQ0MIPKW17GAGMwx4DHGYK",
+            .url = "git+https://github.com/nat3Github/zig-lib-xml#82233206c4f83ed190c1fd7fc976f3e2b26be4b7",
+            .hash = "xml-0.2.2-ZTbP34_NAgAvbDNF1BjVuSDNDdN8bGGrzSjsH4l20H-h",
         },
     },
     .paths = .{
