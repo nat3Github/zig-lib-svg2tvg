@@ -258,7 +258,7 @@ const CircleArc = struct {
     }
 };
 
-/// SVG endpoint arc in center form, uniform angle steps within the tolerance.
+/// SVG endpoint arc in center form, uniform angle steps within half the tolerance.
 /// https://www.w3.org/TR/SVG/implnote.html#ArcImplementationNotes
 const EllipseArc = struct {
     center: Vector = @splat(0),
@@ -306,8 +306,10 @@ const EllipseArc = struct {
         if (!sweep and sweep_angle > 0) sweep_angle -= 2 * math.pi;
         if (sweep and sweep_angle < 0) sweep_angle += 2 * math.pi;
 
+        // Half the tolerance as in dvui's former flattenArc, circles looked faceted at the full one.
+        const sag = tolerance / 2;
         const largest_radius = @max(radius[0], radius[1]);
-        const max_step = if (largest_radius <= tolerance) math.pi / 2.0 else 2 * math.acos(1 - tolerance / largest_radius);
+        const max_step = if (largest_radius <= sag) math.pi / 2.0 else 2 * math.acos(1 - sag / largest_radius);
         const steps = @ceil(@abs(sweep_angle) / max_step);
         if (!(steps >= 1 and steps <= max_uniform_steps)) return .{ .end = end };
         return .{
