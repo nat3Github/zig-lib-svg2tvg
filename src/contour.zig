@@ -199,13 +199,16 @@ fn pushBezier(filter: anytype, flattening: Flattening, controls: []const Point) 
 }
 
 /// The steps of dvui's `Path.Builder.addArc` with the same f32 arithmetic: the start, every multiple
-/// of the step angle strictly between, then the end, which may merge into the next point.
+/// of the step angle strictly between and more than half a pixel from both ends, then the end,
+/// which may merge into the next point.
 const CircleArc = struct {
     center: Point,
     radius: f32,
     angle: f32,
+    start_angle: f32,
     end_angle: f32,
     step: f32,
+    end_margin: f32,
     stage: enum { start, grid, done } = .start,
 
     fn init(center: Point, radius: f32, start_angle: f32, end_angle: f32) CircleArc {
@@ -213,8 +216,10 @@ const CircleArc = struct {
             .center = center,
             .radius = radius,
             .angle = start_angle,
+            .start_angle = start_angle,
             .end_angle = end_angle,
             .step = math.acos(radius / (radius + circle_arc_tolerance)),
+            .end_margin = circle_arc_end_merge / radius,
         };
     }
 
@@ -244,12 +249,12 @@ const CircleArc = struct {
                 return .{ .point = arc.pointAt(arc.angle) };
             },
             .grid => {
-                if (arc.angle - arc.end_angle > arc.step) {
+                // A stub this short at an arc end forces a split stroke join.
+                while (arc.angle - arc.end_angle > arc.step) {
                     const grid_angle = @floor((arc.angle - 0.001) / arc.step) * arc.step;
-                    if (grid_angle < arc.angle) {
-                        arc.angle = grid_angle;
-                        return .{ .point = arc.pointAt(arc.angle) };
-                    }
+                    if (grid_angle >= arc.angle or grid_angle - arc.end_angle < arc.end_margin) break;
+                    arc.angle = grid_angle;
+                    if (arc.start_angle - grid_angle >= arc.end_margin) return .{ .point = arc.pointAt(arc.angle) };
                 }
                 arc.stage = .done;
                 return .{ .point = arc.pointAt(arc.end_angle), .mergeable = true };
