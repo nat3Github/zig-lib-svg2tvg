@@ -1,5 +1,6 @@
 //! Fan triangulation of a convex polygon with a fade to transparent on its edge, written into
-//! buffers of the caller. The geometry is dvui's `Path.fillConvexTriangles`.
+//! buffers of the caller. The geometry is dvui's `Path.fillConvexTriangles`, except that the inner
+//! fade vertex sits on the miter like the outer one, at most 2 px from the corner.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -117,7 +118,12 @@ fn walk(polygon: []Point, options: mesh.ConvexOptions, buffers: mesh.MeshBuffers
         var normal: Vector = .{ (incoming[1] + outgoing[1]) / 2, (-incoming[0] - outgoing[0]) / 2 };
 
         const inside_distance = @min(0.5, options.fade / 2);
-        buffers.positions[vertex_count] = current - normal * @as(Vector, @splat(inside_distance));
+        var inner_normal = normal;
+        const inner_length_squared = @reduce(.Add, normal * normal);
+        if (inner_length_squared > 0.000001) inner_normal *= @splat(1.0 / inner_length_squared);
+        const inner_length = @sqrt(@reduce(.Add, inner_normal * inner_normal));
+        if (inner_length > 2.0) inner_normal *= @splat(2.0 / inner_length);
+        buffers.positions[vertex_count] = current - inner_normal * @as(Vector, @splat(inside_distance));
         buffers.coverages[vertex_count] = 1;
         vertex_count += 1;
 
