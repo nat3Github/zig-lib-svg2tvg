@@ -308,9 +308,11 @@ const StripBuilder = struct {
 
     fn triangleAssumeCapacity(builder: *StripBuilder, a: u32, b: u32, c: u32) void {
         const positions = builder.positions.items;
-        const pa: Vector = positions[a];
-        const ab = @as(Vector, positions[b]) - pa;
-        const ac = @as(Vector, positions[c]) - pa;
+        // In f64 the sign survives nearly collinear corners, f32 flips it.
+        const Wide = @Vector(2, f64);
+        const pa: Wide = @floatCast(@as(Vector, positions[a]));
+        const ab = @as(Wide, @floatCast(@as(Vector, positions[b]))) - pa;
+        const ac = @as(Wide, @floatCast(@as(Vector, positions[c]))) - pa;
         const cross = ab[0] * ac[1] - ab[1] * ac[0];
         if (!(@abs(cross) > 1e-6)) return;
         builder.indices.appendSliceAssumeCapacity(if (cross < 0) &.{ a, b, c } else &.{ a, c, b });
