@@ -114,8 +114,8 @@ const Outliner = struct {
     }
 
     /// Left offset at `vertex` from the edge `previous`-`vertex` to the edge `vertex`-`next`. Outlines
-    /// run clockwise on screen. A join takes the miter point, where both offset lines cross, when it
-    /// stays inside both edge quads (inner side), or on the outer side within the miter limit of a
+    /// run clockwise on screen. A join takes the miter point, where both offset lines cross, on the
+    /// inner side when the corner it cuts off lies inside both edge quads, or on the outer side within the miter limit of a
     /// miter join or less than `miter_overshoot` outside the circle of a round join. Otherwise an
     /// outer join is a clockwise arc or a bevel and an inner join runs through the vertex.
     fn appendJoin(outliner: *Outliner, previous: Vector, vertex: Vector, next: Vector) error{ OutOfMemory, TooComplex }!void {
