@@ -248,7 +248,7 @@ pub const TvgOptions = struct {
     /// False draws only the strokes.
     fills: bool = true,
     anti_alias: bool = true,
-    tolerance: f32 = 0.25,
+    tolerance: f32 = 0.125,
     /// Shared by the whole document.
     limits: Limits = .{},
 };
