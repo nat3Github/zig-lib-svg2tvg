@@ -35,11 +35,6 @@ pub const arrangement = @import("arrangement.zig");
 pub const tvg = @import("tinyvg/tinyvg.zig");
 const antialias = @import("tessellation_antialias.zig");
 pub const strokeOutline = @import("stroke.zig").strokeOutline;
-const convex = @import("convex.zig");
-pub const ConvexOptions = convex.ConvexOptions;
-pub const ConvexCounts = convex.ConvexCounts;
-pub const convexCounts = convex.convexCounts;
-pub const fillConvex = convex.fillConvex;
 const GridPoint = arrangement.GridPoint;
 
 pub const Point = [2]f32;
@@ -71,19 +66,7 @@ pub const Options = struct {
     work: ?*Work = null,
 };
 
-/// Owned by the allocator given to `fill`.
-pub const Mesh = struct {
-    positions: []const Point,
-    coverages: []const f32,
-    /// Triangles with (b - a) × (c - a) < 0, y down: counterclockwise on screen.
-    indices: []const u32,
-
-    pub fn deinit(mesh: Mesh, allocator: Allocator) void {
-        allocator.free(mesh.positions);
-        allocator.free(mesh.coverages);
-        allocator.free(mesh.indices);
-    }
-};
+pub const Mesh = @import("mesh.zig").Mesh;
 
 pub fn fill(allocator: Allocator, contours: []const []const Point, options: Options) Error!Mesh {
     var point_count: usize = 0;

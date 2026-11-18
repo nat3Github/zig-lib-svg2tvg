@@ -14,7 +14,9 @@ pub const tvg = @import("tinyvg/tinyvg.zig");
 pub const internal = struct {
     pub const tessellation = @import("tessellation.zig");
     pub const arrangement = @import("arrangement.zig");
+    pub const contour = @import("contour.zig");
 };
+const convex = @import("convex.zig");
 
 pub const Point = [2]f32;
 pub const Error = error{ OutOfMemory, InvalidInput, TooComplex };
@@ -75,7 +77,7 @@ pub const Contour = struct {
 
 // Fill
 
-pub const FillRule = enum { nonzero, even_odd };
+pub const FillRule = internal.arrangement.FillRule;
 
 pub const FillOptions = struct {
     fill_rule: FillRule = .nonzero,
@@ -90,8 +92,38 @@ pub const FillOptions = struct {
 /// Any contours: concave, with holes, self-intersecting. Convex single contours take the
 /// fan of `fillConvex`.
 pub fn fill(allocator: Allocator, contours: []const Contour, options: FillOptions) Error!Mesh {
-    _ = .{ allocator, contours, options };
-    @compileError("mesh.fill: implementation follows (dvui #1056)");
+    const anti_alias = if (options.fade == 0) false else if (options.fade == 1) true else return error.InvalidInput;
+    if (!(options.tolerance > 0)) return error.InvalidInput;
+    for (contours) |contour| if (!internal.contour.isValid(contour)) return error.InvalidInput;
+
+    var points: std.ArrayList(Point) = .empty;
+    defer points.deinit(allocator);
+    const ends = try allocator.alloc(usize, contours.len);
+    defer allocator.free(ends);
+    for (contours, ends) |contour, *end| {
+        try internal.contour.append(allocator, contour, options.tolerance, options.limits.max_points, &points);
+        end.* = points.items.len;
+    }
+    if (contours.len == 1 and convex.isConvex(points.items)) {
+        const convex_options: ConvexOptions = .{ .fade = options.fade };
+        const size = convex.sizeForPoints(points.items.len, convex_options);
+        const positions = try allocator.alloc(Point, size.vertices);
+        errdefer allocator.free(positions);
+        const coverages = try allocator.alloc(f32, size.vertices);
+        errdefer allocator.free(coverages);
+        const indices = try allocator.alloc(u32, size.indices);
+        convex.fillPolygon(points.items, convex_options, .{ .positions = positions, .coverages = coverages, .indices = indices });
+        return .{ .positions = positions, .coverages = coverages, .indices = indices };
+    }
+    const polygons = try allocator.alloc([]const Point, contours.len);
+    defer allocator.free(polygons);
+    for (polygons, ends, 0..) |*polygon, end, index| polygon.* = points.items[if (index == 0) 0 else ends[index - 1]..end];
+    return internal.tessellation.fill(allocator, polygons, .{
+        .fill_rule = options.fill_rule,
+        .anti_alias = anti_alias,
+        .limits = options.limits,
+        .work = options.work,
+    });
 }
 
 pub const ConvexOptions = struct {
@@ -102,17 +134,11 @@ pub const ConvexOptions = struct {
     center: ?Point = null,
 };
 
-pub fn convexSize(contour: Contour, options: ConvexOptions) MeshSize {
-    _ = .{ contour, options };
-    @compileError("mesh.convexSize: implementation follows (dvui #1056)");
-}
+pub const convexSize = convex.convexSize;
 
 /// Allocation free, for the hot path of widgets. `contour` must be convex, either orientation;
 /// curves flatten like `circle_arc` within half a pixel.
-pub fn fillConvex(contour: Contour, options: ConvexOptions, buffers: MeshBuffers) void {
-    _ = .{ contour, options, buffers };
-    @compileError("mesh.fillConvex: implementation follows (dvui #1056)");
-}
+pub const fillConvex = convex.fillConvex;
 
 // Stroke
 
