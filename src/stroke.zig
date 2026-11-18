@@ -15,6 +15,8 @@ const Vector = @Vector(2, f32);
 const miter_overshoot = 0.03;
 const max_arc_steps = 1024;
 
+pub const Polyline = struct { points: []const Point, closed: bool = false };
+
 /// Width and miter limit within `tessellation.max_coordinate_pixels`, else invalid input.
 pub fn validateOptions(options: mesh.StrokeOptions) tessellation.Error!void {
     if (!(options.width > 0 and options.width / 2 <= tessellation.max_coordinate_pixels)) return error.InvalidInput;
@@ -31,17 +33,20 @@ pub fn validate(polyline: []const Point, options: mesh.StrokeOptions) tessellati
 }
 
 /// Points of `polyline` without near repeats, and for a closed one without a last point on the
-/// first. Owned by `allocator`.
-fn distinctPoints(allocator: Allocator, polyline: []const Point, closed: bool) error{OutOfMemory}![]Vector {
-    var distinct: std.ArrayList(Vector) = try .initCapacity(allocator, polyline.len);
-    errdefer distinct.deinit(allocator);
+/// first, at the front of `buffer`.
+fn distinctPoints(polyline: []const Point, closed: bool, buffer: []Vector) []Vector {
+    assert(buffer.len >= polyline.len);
+    var count: usize = 0;
     for (polyline) |point| {
-        if (distinct.items.len == 0 or !nearlyEqual(distinct.getLast(), point)) distinct.appendAssumeCapacity(point);
+        if (count == 0 or !nearlyEqual(buffer[count - 1], point)) {
+            buffer[count] = point;
+            count += 1;
+        }
     }
-    if (closed) while (distinct.items.len > 1 and nearlyEqual(distinct.items[0], distinct.getLast())) {
-        _ = distinct.pop();
+    if (closed) while (count > 1 and nearlyEqual(buffer[0], buffer[count - 1])) {
+        count -= 1;
     };
-    return distinct.toOwnedSlice(allocator);
+    return buffer[0..count];
 }
 
 /// Contours whose nonzero fill is the stroke of `polyline` in the style of `options`: edge quads,
@@ -62,8 +67,9 @@ pub fn strokeOutline(
     try validate(polyline, options);
     if (polyline.len == 0) return;
 
-    const pts = try distinctPoints(allocator, polyline, closed);
-    defer allocator.free(pts);
+    const buffer = try allocator.alloc(Vector, polyline.len);
+    defer allocator.free(buffer);
+    const pts = distinctPoints(polyline, closed, buffer);
     const radius = options.width / 2;
     var outliner: Outliner = .{ .allocator = allocator, .radius = radius, .options = options, .max_points = max_points, .points = points, .ends = ends };
     if (pts.len == 1) {
@@ -202,15 +208,9 @@ fn turnAngle(incoming: Vector, outgoing: Vector) f32 {
 /// it returns null unless the strokes are one polyline turning one way, an open one by at most
 /// half a turn and a closed one once around, with every join shared and end segments longer than
 /// the fade at butt caps.
-pub fn strip(
-    allocator: Allocator,
-    polylines: []const []const Point,
-    closed: []const bool,
-    options: mesh.StrokeOptions,
-) tessellation.Error!?mesh.Mesh {
-    assert(polylines.len == closed.len);
+pub fn strip(allocator: Allocator, polylines: []const Polyline, options: mesh.StrokeOptions) tessellation.Error!?mesh.Mesh {
     try validateOptions(options);
-    for (polylines) |polyline| try validate(polyline, options);
+    for (polylines) |polyline| try validate(polyline.points, options);
 
     const radius = options.width / 2;
     const fade: f32 = if (options.anti_alias) 1 else 0;
@@ -226,45 +226,46 @@ pub fn strip(
     };
     defer builder.deinit();
     var point_total: usize = 0;
-    for (polylines) |polyline| point_total += polyline.len;
+    var longest: usize = 0;
+    for (polylines) |polyline| {
+        point_total += polyline.points.len;
+        longest = @max(longest, polyline.points.len);
+    }
     try builder.positions.ensureTotalCapacity(allocator, point_total * 4 + 16);
     try builder.coverages.ensureTotalCapacity(allocator, point_total * 4 + 16);
     try builder.indices.ensureTotalCapacity(allocator, point_total * 18 + 48);
 
+    const buffer = try allocator.alloc(Vector, longest);
+    defer allocator.free(buffer);
+    const segment_buffer = try allocator.alloc(Segment, longest);
+    defer allocator.free(segment_buffer);
     var drawn_polylines: usize = 0;
-    for (polylines, closed) |polyline, is_closed| {
-        const pts = try distinctPoints(allocator, polyline, is_closed);
-        defer allocator.free(pts);
+    for (polylines) |polyline| {
+        const is_closed = polyline.closed;
+        const pts = distinctPoints(polyline.points, is_closed, buffer);
         if (pts.len == 0) continue;
         drawn_polylines += 1;
         if (options.translucent and drawn_polylines > 1) return null;
         if (pts.len == 1) {
             if (options.cap == .butt) continue;
-            const one_point = [2]Vector{ pts[0], pts[0] };
-            builder.openPolyline(&one_point, &.{.{ 1, 0 }}, &.{0}) catch |err| switch (err) {
-                error.Overlap => unreachable,
-                else => |other| return other,
-            };
+            const start = try builder.startCap(pts[0], .{ 1, 0 });
+            try builder.connect(start, try builder.endCap(pts[0], .{ 1, 0 }));
             continue;
         }
-        const segment_count = if (is_closed) pts.len else pts.len - 1;
-        const directions = try allocator.alloc(Vector, segment_count);
-        defer allocator.free(directions);
-        const lengths = try allocator.alloc(f32, segment_count);
-        defer allocator.free(lengths);
-        for (directions, lengths, 0..) |*direction, *segment_length, i| {
-            const chord = pts[(i + 1) % pts.len] - pts[i];
-            segment_length.* = length(chord);
-            assert(segment_length.* > 0);
-            direction.* = chord / @as(Vector, @splat(segment_length.*));
+        const segments = segment_buffer[0 .. if (is_closed) pts.len else pts.len - 1];
+        for (segments, 0..) |*segment, index| {
+            const chord = pts[(index + 1) % pts.len] - pts[index];
+            const chord_length = length(chord);
+            assert(chord_length > 0);
+            segment.* = .{ .direction = chord / @as(Vector, @splat(chord_length)), .length = chord_length };
         }
         if (options.translucent) {
-            if (!turnsOnce(directions, is_closed)) return null;
+            if (!turnsOnce(segments, is_closed)) return null;
             // Butt and thin square caps put their last station inside the end, two of them must not cross.
             const cap_inset = fade / 2 - if (options.cap == .square) radius else 0;
-            if (!is_closed and cap_inset > 0 and !(@min(lengths[0], lengths[lengths.len - 1]) >= 2 * cap_inset)) return null;
+            if (!is_closed and cap_inset > 0 and !(@min(segments[0].length, segments[segments.len - 1].length) >= 2 * cap_inset)) return null;
         }
-        (if (is_closed) builder.closedPolyline(pts, directions, lengths) else builder.openPolyline(pts, directions, lengths)) catch |err| switch (err) {
+        (if (is_closed) builder.closedPolyline(pts, segments) else builder.openPolyline(pts, segments)) catch |err| switch (err) {
             error.Overlap => return null,
             else => |other| return other,
         };
@@ -276,24 +277,29 @@ pub fn strip(
     return .{ .positions = positions, .coverages = coverages, .indices = try builder.indices.toOwnedSlice(allocator) };
 }
 
+/// From a point to the next, the last one of a closed polyline back to the first.
+const Segment = struct { direction: Vector, length: f32 };
+
 /// All joins turn the same way, an open polyline by at most half a turn in total and a closed one
 /// exactly once around: the direction enters the half plane behind the first one never or once.
-fn turnsOnce(directions: []const Vector, closed: bool) bool {
-    const first = directions[0];
+fn turnsOnce(segments: []const Segment, closed: bool) bool {
+    const segment_count = segments.len;
+    const first = segments[0].direction;
     var turn_sign: f32 = 0;
     var behind_entries: usize = 0;
     var previous_behind = false;
-    const join_count = if (closed) directions.len else directions.len - 1;
+    const join_count = if (closed) segment_count else segment_count - 1;
     for (0..join_count) |join_index| {
-        const incoming = directions[join_index];
-        const outgoing = directions[(join_index + 1) % directions.len];
+        const incoming = segments[join_index].direction;
+        const outgoing = segments[(join_index + 1) % segment_count].direction;
         const cross = incoming[0] * outgoing[1] - incoming[1] * outgoing[0];
         if (cross != 0) {
             if (turn_sign == 0) turn_sign = math.sign(cross);
             if (math.sign(cross) != turn_sign) return false;
         }
     }
-    for (directions[1..]) |direction| {
+    for (1..segment_count) |segment_index| {
+        const direction = segments[segment_index].direction;
         const behind = (first[0] * direction[1] - first[1] * direction[0]) * turn_sign < 0;
         if (behind and !previous_behind) behind_entries += 1;
         previous_behind = behind;
@@ -414,25 +420,25 @@ const StripBuilder = struct {
 
     const Error = error{ OutOfMemory, TooComplex, Overlap };
 
-    fn openPolyline(builder: *StripBuilder, pts: []const Vector, directions: []const Vector, lengths: []const f32) Error!void {
-        assert(pts.len == directions.len + 1 and lengths.len == directions.len);
-        var current = try builder.startCap(pts[0], directions[0]);
+    fn openPolyline(builder: *StripBuilder, pts: []const Vector, segments: []const Segment) Error!void {
+        assert(pts.len == segments.len + 1);
+        var current = try builder.startCap(pts[0], segments[0].direction);
         for (1..pts.len - 1) |i| {
-            const stations = try builder.join(pts[i], directions[i - 1], directions[i], lengths[i - 1], lengths[i]);
+            const stations = try builder.join(pts[i], segments[i - 1], segments[i]);
             try builder.connect(current, stations.incoming);
             current = stations.outgoing;
         }
-        const end = try builder.endCap(pts[pts.len - 1], directions[directions.len - 1]);
+        const end = try builder.endCap(pts[pts.len - 1], segments[segments.len - 1].direction);
         try builder.connect(current, end);
     }
 
-    fn closedPolyline(builder: *StripBuilder, pts: []const Vector, directions: []const Vector, lengths: []const f32) Error!void {
-        assert(pts.len == directions.len and pts.len >= 2);
+    fn closedPolyline(builder: *StripBuilder, pts: []const Vector, segments: []const Segment) Error!void {
+        assert(pts.len == segments.len and pts.len >= 2);
         const count = pts.len;
-        const first = try builder.join(pts[0], directions[count - 1], directions[0], lengths[count - 1], lengths[0]);
+        const first = try builder.join(pts[0], segments[count - 1], segments[0]);
         var current = first.outgoing;
         for (1..count) |i| {
-            const stations = try builder.join(pts[i], directions[i - 1], directions[i], lengths[i - 1], lengths[i]);
+            const stations = try builder.join(pts[i], segments[i - 1], segments[i]);
             try builder.connect(current, stations.incoming);
             current = stations.outgoing;
         }
@@ -464,7 +470,9 @@ const StripBuilder = struct {
 
     const Join = struct { incoming: Station, outgoing: Station };
 
-    fn join(builder: *StripBuilder, point: Vector, incoming: Vector, outgoing: Vector, incoming_length: f32, outgoing_length: f32) Error!Join {
+    fn join(builder: *StripBuilder, point: Vector, incoming_segment: Segment, outgoing_segment: Segment) Error!Join {
+        const incoming = incoming_segment.direction;
+        const outgoing = outgoing_segment.direction;
         const dot = @reduce(.Add, incoming * outgoing);
         const cross = incoming[0] * outgoing[1] - incoming[1] * outgoing[0];
         // Within 1e-3 of a reversal counts as one, as in `turnAngle`.
@@ -481,7 +489,7 @@ const StripBuilder = struct {
         };
         // The inner miter moves back along both edges, half an edge each leaves room for the other end.
         const inner_fits = half_turn_cos > 0 and
-            builder.outer * half_turn_sin <= 0.5 * @min(incoming_length, outgoing_length) * half_turn_cos;
+            builder.outer * half_turn_sin <= 0.5 * @min(incoming_segment.length, outgoing_segment.length) * half_turn_cos;
         // Scaled to the miter: an offset of 1 along it lies 1 from both edges.
         const miter = (incoming_normal + outgoing_normal) * @as(Vector, @splat(if (reversal) 0 else 1 / (1 + dot)));
         if (outer_fits and inner_fits) {

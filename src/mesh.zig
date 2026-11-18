@@ -186,29 +186,31 @@ pub fn stroke(allocator: Allocator, contours: []const Contour, options: StrokeOp
     try internal.stroke.validateOptions(options);
     for (contours) |contour| if (!internal.contour.isValid(contour)) return error.InvalidInput;
 
+    const polylines = try allocator.alloc(internal.stroke.Polyline, contours.len);
+    defer allocator.free(polylines);
     var points: std.ArrayList(Point) = .empty;
     defer points.deinit(allocator);
-    const polylines = try allocator.alloc([]const Point, contours.len);
-    defer allocator.free(polylines);
-    const closed = try allocator.alloc(bool, contours.len);
-    defer allocator.free(closed);
-    const ends = try allocator.alloc(usize, contours.len);
-    defer allocator.free(ends);
-    for (contours, ends, closed) |contour, *end, *is_closed| {
+    for (contours, polylines) |contour, *polyline| {
+        const first_point = points.items.len;
         try internal.contour.append(allocator, contour, contour.closed, options.tolerance, options.limits.max_points, &points);
-        end.* = points.items.len;
-        is_closed.* = contour.closed;
+        polyline.* = .{ .points = points.items[first_point..], .closed = contour.closed };
     }
-    for (polylines, ends, 0..) |*polyline, end, index| polyline.* = points.items[if (index == 0) 0 else ends[index - 1]..end];
-    if (try internal.stroke.strip(allocator, polylines, closed, options)) |direct| return direct;
+    // The list may have moved while it grew, only the lengths still hold.
+    var start: usize = 0;
+    for (polylines) |*polyline| {
+        polyline.points = points.items[start..][0..polyline.points.len];
+        start += polyline.points.len;
+    }
+    assert(start == points.items.len);
+    if (try internal.stroke.strip(allocator, polylines, options)) |direct| return direct;
     assert(options.translucent);
 
     var outline_points: std.ArrayList(Point) = .empty;
     defer outline_points.deinit(allocator);
     var outline_ends: std.ArrayList(usize) = .empty;
     defer outline_ends.deinit(allocator);
-    for (polylines, closed) |polyline, is_closed| {
-        try internal.stroke.strokeOutline(allocator, polyline, is_closed, options, options.limits.max_points, &outline_points, &outline_ends);
+    for (polylines) |polyline| {
+        try internal.stroke.strokeOutline(allocator, polyline.points, polyline.closed, options, options.limits.max_points, &outline_points, &outline_ends);
     }
     const outlines = try allocator.alloc([]const Point, outline_ends.items.len);
     defer allocator.free(outlines);
