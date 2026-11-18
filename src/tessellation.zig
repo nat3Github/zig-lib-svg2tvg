@@ -35,6 +35,11 @@ pub const arrangement = @import("arrangement.zig");
 pub const tvg = @import("tinyvg/tinyvg.zig");
 const antialias = @import("tessellation_antialias.zig");
 pub const strokeOutline = @import("stroke.zig").strokeOutline;
+const convex = @import("convex.zig");
+pub const ConvexOptions = convex.ConvexOptions;
+pub const ConvexCounts = convex.ConvexCounts;
+pub const convexCounts = convex.convexCounts;
+pub const fillConvex = convex.fillConvex;
 const GridPoint = arrangement.GridPoint;
 
 pub const Point = [2]f32;
@@ -70,7 +75,7 @@ pub const Options = struct {
 pub const Mesh = struct {
     positions: []const Point,
     coverages: []const f32,
-    /// Triangles with (b - a) × (c - a) > 0, y down.
+    /// Triangles with (b - a) × (c - a) < 0, y down: counterclockwise on screen.
     indices: []const u32,
 
     pub fn deinit(mesh: Mesh, allocator: Allocator) void {
@@ -961,7 +966,7 @@ const Output = struct {
     fn emitTriangle(output: *Output, a: *Vertex, b: *Vertex, c: *Vertex) error{OutOfMemory}!void {
         const area = orientation(a.point, b.point, c.point);
         if (area == 0) return;
-        const corners: [3]*Vertex = if (area > 0) .{ a, b, c } else .{ a, c, b };
+        const corners: [3]*Vertex = if (area < 0) .{ a, b, c } else .{ a, c, b };
         for (corners) |corner| try output.indices.append(output.allocator, try output.indexOf(corner));
     }
 
