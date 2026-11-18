@@ -104,40 +104,39 @@ pub fn forEachPoint(contour: Contour, flattening: Flattening, context: anytype, 
     try filter.finish();
 }
 
-/// At least as many points as `forEachPoint` emits, with trigonometry per segment only. For a
-/// valid contour.
+/// At least as many points as `forEachPoint` emits, without trigonometry for lines and circle
+/// arcs. For a valid contour.
 pub fn maxPointCount(contour: Contour, tolerance: f32) usize {
     var count: usize = 1;
     var previous_end = contour.start;
-    var previous_arc: ?CircleArc = null;
+    var previous_circle_arc: ?@FieldType(Segment, "circle_arc") = null;
     for (contour.segments) |segment| {
-        const from = if (previous_arc) |arc| arc.pointAt(arc.end_angle) else previous_end;
+        if (segment == .circle_arc) {
+            const arc = segment.circle_arc;
+            count += CircleArc.maxPointCount(arc.radius, arc.start_angle, arc.end_angle);
+            previous_circle_arc = arc;
+            continue;
+        }
+        const from: Point = if (previous_circle_arc) |arc| .{ arc.center[0] + arc.radius * @cos(arc.end_angle), arc.center[1] + arc.radius * @sin(arc.end_angle) } else previous_end;
+        previous_circle_arc = null;
         switch (segment) {
+            .circle_arc => unreachable,
             .line => |end| {
                 count += 1;
                 previous_end = end;
-                previous_arc = null;
-            },
-            .circle_arc => |arc| {
-                const points: CircleArc = .init(arc.center, arc.radius, arc.start_angle, arc.end_angle);
-                count += points.maxPointCount();
-                previous_arc = points;
             },
             .arc => |arc| {
                 const points: EllipseArc = .init(from, arc.radius, arc.rotation, arc.large_arc, arc.sweep, arc.end, tolerance);
                 count += points.step_count + 1;
                 previous_end = arc.end;
-                previous_arc = null;
             },
             .quadratic => |curve| {
                 count += UniformBezier.init(&.{ from, curve.control, curve.end }, tolerance).step_count;
                 previous_end = curve.end;
-                previous_arc = null;
             },
             .cubic => |curve| {
                 count += UniformBezier.init(&.{ from, curve.control_0, curve.control_1, curve.end }, tolerance).step_count;
                 previous_end = curve.end;
-                previous_arc = null;
             },
         }
     }
@@ -219,11 +218,13 @@ const CircleArc = struct {
         };
     }
 
-    /// Start, end and the multiples of the step strictly between, which lie above the end
-    /// angle minus 0.001.
-    fn maxPointCount(arc: *const CircleArc) usize {
-        if (arc.radius == 0) return 1;
-        const grid_points = @floor((arc.angle - arc.end_angle + 0.001) / arc.step) + 1;
+    /// Start, end and the multiples of the step strictly between, which lie above the end angle
+    /// minus 0.001. The step is bounded from below by acos(x) >= sqrt(2 (1 - x)), with a margin
+    /// for the rounding of x near 1.
+    fn maxPointCount(radius: f32, start_angle: f32, end_angle: f32) usize {
+        if (radius == 0) return 1;
+        const smallest_step = 0.99 * @sqrt(2 * circle_arc_tolerance / (radius + circle_arc_tolerance));
+        const grid_points = @floor((start_angle - end_angle + 0.001) / smallest_step) + 1;
         assert(grid_points < 1 << 30);
         return 2 + @as(usize, @intFromFloat(@max(0, grid_points)));
     }
