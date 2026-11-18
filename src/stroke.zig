@@ -198,7 +198,7 @@ fn turnAngle(incoming: Vector, outgoing: Vector) f32 {
 /// point, quads between stations, and fans for wide joins and round caps. Stations at gentle
 /// joins are shared by both edges; where the inner side would fold back the strip splits and a
 /// patch fills the outer wedge. The fade is centered on the edge, strokes thinner than it get
-/// core coverage width / fade. Overlapping pieces cover a pixel twice, so for `options.translucent`
+/// core coverage 2 width / (width + fade), which keeps their ink. Overlapping pieces cover a pixel twice, so for `options.translucent`
 /// it returns null unless the strokes are one polyline turning one way, an open one by at most
 /// half a turn and a closed one once around, with every join shared and end segments longer than
 /// the fade at butt caps.
@@ -218,7 +218,7 @@ pub fn strip(
         .allocator = allocator,
         .core = @max(0, radius - fade / 2),
         .outer = radius + fade / 2,
-        .core_coverage = if (fade > 0) @min(1, options.width / fade) else 1,
+        .core_coverage = if (options.width < fade) 2 * options.width / (options.width + fade) else 1,
         .has_fade = fade > 0,
         .radius = radius,
         .options = options,
