@@ -10,13 +10,13 @@ const ColorHash = ut.ColorHash;
 const Stack = ut.Stack;
 const NodeMaker = ut.NodeMaker;
 const svg_ut = @import("svg-util.zig");
-const arrangement = @import("tessellation").arrangement;
+const arrangement = @import("mesh").internal.arrangement;
 const SvgColor = svg_ut.SvgColor;
 const SvgColorAttribute = svg_ut.SvgColorAttribute;
 
 const xml = @import("xml");
 
-pub const tvg = @import("tessellation").tvg;
+pub const tvg = @import("mesh").tvg;
 
 pub const Color = tvg.Color;
 const Path = tvg.Path;

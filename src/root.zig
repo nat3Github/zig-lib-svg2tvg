@@ -1,10 +1,9 @@
 pub const ut = @import("util.zig");
 pub const svg_ut = @import("svg-util.zig");
-pub const tessellation = @import("tessellation");
-pub const tvg = tessellation.tvg;
+pub const mesh = @import("mesh");
+pub const tvg = mesh.tvg;
 pub const tvg_parsing = tvg.parsing;
 pub const conversion = @import("conversion.zig");
-pub const arrangement = tessellation.arrangement;
 pub const tvg_from_svg = conversion.tvg_from_svg;
 
 pub const Color = tvg.Color;

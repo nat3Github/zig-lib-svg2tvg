@@ -5,13 +5,13 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const test_step = b.step("test", "Run unit tests");
 
-    // --- Tessellation and TVG parsing, no xml ---------------------------------
-    const tessellation_module = b.addModule("tessellation", .{
-        .root_source_file = b.path("src/tessellation.zig"),
+    // --- Meshes and TVG parsing, no xml ---------------------------------------
+    const mesh_module = b.addModule("mesh", .{
+        .root_source_file = b.path("src/mesh.zig"),
         .target = target,
         .optimize = optimize,
     });
-    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = tessellation_module })).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = mesh_module })).step);
 
     // --- Core module: SVG→TVG conversion only, no renderer -------------------
     const xml_dependency = b.dependency("xml", .{ .target = target, .optimize = optimize });
@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     this_module.addImport("xml", xml_dependency.module("xml"));
-    this_module.addImport("tessellation", tessellation_module);
+    this_module.addImport("mesh", mesh_module);
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = this_module })).step);
 
     // Demo + dump examples live in examples/ as a separate build that imports
