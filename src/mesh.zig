@@ -5,6 +5,7 @@
 //! sees convexity and smooth joins, and takes the fastest mesh that looks the same.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 
 /// TinyVG format: parser, builder, reference renderer.
@@ -199,7 +200,8 @@ pub fn stroke(allocator: Allocator, contours: []const Contour, options: StrokeOp
         is_closed.* = contour.closed;
     }
     for (polylines, ends, 0..) |*polyline, end, index| polyline.* = points.items[if (index == 0) 0 else ends[index - 1]..end];
-    if (!options.translucent) return internal.stroke.strip(allocator, polylines, closed, options);
+    if (try internal.stroke.strip(allocator, polylines, closed, options)) |direct| return direct;
+    assert(options.translucent);
 
     var outline_points: std.ArrayList(Point) = .empty;
     defer outline_points.deinit(allocator);

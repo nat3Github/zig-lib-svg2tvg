@@ -194,18 +194,20 @@ fn turnAngle(incoming: Vector, outgoing: Vector) f32 {
     return if (@abs(turn) > math.pi - 1e-3) -math.pi else turn;
 }
 
-/// The mesh of an opaque stroke written directly: one station of core and fade vertices across
-/// every point, quads between stations, and fans for wide joins and round caps. Overlapping pieces
-/// cover a pixel twice, so `options.translucent` strokes take the outline. Stations at gentle
+/// The mesh of a stroke written directly: one station of core and fade vertices across every
+/// point, quads between stations, and fans for wide joins and round caps. Stations at gentle
 /// joins are shared by both edges; where the inner side would fold back the strip splits and a
 /// patch fills the outer wedge. The fade is centered on the edge, strokes thinner than it get
-/// core coverage width / fade.
+/// core coverage width / fade. Overlapping pieces cover a pixel twice, so for `options.translucent`
+/// it returns null unless the strokes are one polyline turning one way, an open one by at most
+/// half a turn and a closed one once around, with every join shared and end segments longer than
+/// the fade at butt caps.
 pub fn strip(
     allocator: Allocator,
     polylines: []const []const Point,
     closed: []const bool,
     options: mesh.StrokeOptions,
-) tessellation.Error!mesh.Mesh {
+) tessellation.Error!?mesh.Mesh {
     assert(polylines.len == closed.len);
     try validateOptions(options);
     for (polylines) |polyline| try validate(polyline, options);
@@ -229,14 +231,20 @@ pub fn strip(
     try builder.coverages.ensureTotalCapacity(allocator, point_total * 4 + 16);
     try builder.indices.ensureTotalCapacity(allocator, point_total * 18 + 48);
 
+    var drawn_polylines: usize = 0;
     for (polylines, closed) |polyline, is_closed| {
         const pts = try distinctPoints(allocator, polyline, is_closed);
         defer allocator.free(pts);
         if (pts.len == 0) continue;
+        drawn_polylines += 1;
+        if (options.translucent and drawn_polylines > 1) return null;
         if (pts.len == 1) {
             if (options.cap == .butt) continue;
             const one_point = [2]Vector{ pts[0], pts[0] };
-            try builder.openPolyline(&one_point, &.{.{ 1, 0 }}, &.{0});
+            builder.openPolyline(&one_point, &.{.{ 1, 0 }}, &.{0}) catch |err| switch (err) {
+                error.Overlap => unreachable,
+                else => |other| return other,
+            };
             continue;
         }
         const segment_count = if (is_closed) pts.len else pts.len - 1;
@@ -250,13 +258,47 @@ pub fn strip(
             assert(segment_length.* > 0);
             direction.* = chord / @as(Vector, @splat(segment_length.*));
         }
-        if (is_closed) try builder.closedPolyline(pts, directions, lengths) else try builder.openPolyline(pts, directions, lengths);
+        if (options.translucent) {
+            if (!turnsOnce(directions, is_closed)) return null;
+            // Butt and thin square caps put their last station inside the end, two of them must not cross.
+            const cap_inset = fade / 2 - if (options.cap == .square) radius else 0;
+            if (!is_closed and cap_inset > 0 and !(@min(lengths[0], lengths[lengths.len - 1]) >= 2 * cap_inset)) return null;
+        }
+        (if (is_closed) builder.closedPolyline(pts, directions, lengths) else builder.openPolyline(pts, directions, lengths)) catch |err| switch (err) {
+            error.Overlap => return null,
+            else => |other| return other,
+        };
     }
     const positions = try builder.positions.toOwnedSlice(allocator);
     errdefer allocator.free(positions);
     const coverages = try builder.coverages.toOwnedSlice(allocator);
     errdefer allocator.free(coverages);
     return .{ .positions = positions, .coverages = coverages, .indices = try builder.indices.toOwnedSlice(allocator) };
+}
+
+/// All joins turn the same way, an open polyline by at most half a turn in total and a closed one
+/// exactly once around: the direction enters the half plane behind the first one never or once.
+fn turnsOnce(directions: []const Vector, closed: bool) bool {
+    const first = directions[0];
+    var turn_sign: f32 = 0;
+    var behind_entries: usize = 0;
+    var previous_behind = false;
+    const join_count = if (closed) directions.len else directions.len - 1;
+    for (0..join_count) |join_index| {
+        const incoming = directions[join_index];
+        const outgoing = directions[(join_index + 1) % directions.len];
+        const cross = incoming[0] * outgoing[1] - incoming[1] * outgoing[0];
+        if (cross != 0) {
+            if (turn_sign == 0) turn_sign = math.sign(cross);
+            if (math.sign(cross) != turn_sign) return false;
+        }
+    }
+    for (directions[1..]) |direction| {
+        const behind = (first[0] * direction[1] - first[1] * direction[0]) * turn_sign < 0;
+        if (behind and !previous_behind) behind_entries += 1;
+        previous_behind = behind;
+    }
+    return behind_entries == @intFromBool(closed);
 }
 
 /// Vertices across a point from the right fade edge over the right and left core edges to the left
@@ -370,7 +412,9 @@ const StripBuilder = struct {
         if (builder.has_fade) try builder.quad(from[0], from[1], to[1], to[0]);
     }
 
-    fn openPolyline(builder: *StripBuilder, pts: []const Vector, directions: []const Vector, lengths: []const f32) error{ OutOfMemory, TooComplex }!void {
+    const Error = error{ OutOfMemory, TooComplex, Overlap };
+
+    fn openPolyline(builder: *StripBuilder, pts: []const Vector, directions: []const Vector, lengths: []const f32) Error!void {
         assert(pts.len == directions.len + 1 and lengths.len == directions.len);
         var current = try builder.startCap(pts[0], directions[0]);
         for (1..pts.len - 1) |i| {
@@ -382,7 +426,7 @@ const StripBuilder = struct {
         try builder.connect(current, end);
     }
 
-    fn closedPolyline(builder: *StripBuilder, pts: []const Vector, directions: []const Vector, lengths: []const f32) error{ OutOfMemory, TooComplex }!void {
+    fn closedPolyline(builder: *StripBuilder, pts: []const Vector, directions: []const Vector, lengths: []const f32) Error!void {
         assert(pts.len == directions.len and pts.len >= 2);
         const count = pts.len;
         const first = try builder.join(pts[0], directions[count - 1], directions[0], lengths[count - 1], lengths[0]);
@@ -420,7 +464,7 @@ const StripBuilder = struct {
 
     const Join = struct { incoming: Station, outgoing: Station };
 
-    fn join(builder: *StripBuilder, point: Vector, incoming: Vector, outgoing: Vector, incoming_length: f32, outgoing_length: f32) error{ OutOfMemory, TooComplex }!Join {
+    fn join(builder: *StripBuilder, point: Vector, incoming: Vector, outgoing: Vector, incoming_length: f32, outgoing_length: f32) Error!Join {
         const dot = @reduce(.Add, incoming * outgoing);
         const cross = incoming[0] * outgoing[1] - incoming[1] * outgoing[0];
         // Within 1e-3 of a reversal counts as one, as in `turnAngle`.
@@ -444,6 +488,7 @@ const StripBuilder = struct {
             const shared = try builder.plainStation(point, miter, builder.core_coverage);
             return .{ .incoming = shared, .outgoing = shared };
         }
+        if (builder.options.translucent) return error.Overlap;
         const incoming_station = try builder.plainStation(point, incoming_normal, builder.core_coverage);
         const outgoing_station = try builder.plainStation(point, outgoing_normal, builder.core_coverage);
         // A right turn on screen has its outer side on the left, as in the outline.
