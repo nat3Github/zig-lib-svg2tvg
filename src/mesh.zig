@@ -113,7 +113,10 @@ pub fn fill(allocator: Allocator, contours: []const Contour, options: FillOption
         errdefer allocator.free(coverages);
         const indices = try allocator.alloc(u32, size.indices);
         convex.fillPolygon(points.items, convex_options, .{ .positions = positions, .coverages = coverages, .indices = indices });
-        return .{ .positions = positions, .coverages = coverages, .indices = indices };
+        const fan: Mesh = .{ .positions = positions, .coverages = coverages, .indices = indices };
+        // The fade of thin shapes folds over, the sweep has no folds.
+        if (!hasClockwiseTriangle(fan)) return fan;
+        fan.deinit(allocator);
     }
     const polygons = try allocator.alloc([]const Point, contours.len);
     defer allocator.free(polygons);
@@ -124,6 +127,19 @@ pub fn fill(allocator: Allocator, contours: []const Contour, options: FillOption
         .limits = options.limits,
         .work = options.work,
     });
+}
+
+fn hasClockwiseTriangle(built: Mesh) bool {
+    var triangle: usize = 0;
+    while (triangle < built.indices.len) : (triangle += 3) {
+        const corners = built.indices[triangle..][0..3];
+        const a = built.positions[corners[0]];
+        const b = built.positions[corners[1]];
+        const c = built.positions[corners[2]];
+        const cross = (@as(f64, b[0]) - a[0]) * (@as(f64, c[1]) - a[1]) - (@as(f64, b[1]) - a[1]) * (@as(f64, c[0]) - a[0]);
+        if (cross > 0) return true;
+    }
+    return false;
 }
 
 pub const ConvexOptions = struct {
@@ -248,6 +264,5 @@ pub const TvgMeshes = struct {
 
 /// One part per fill and stroke of every command. Malformed documents are invalid input.
 pub fn tvgMeshes(allocator: Allocator, tvg_bytes: []const u8, options: TvgOptions) Error!TvgMeshes {
-    _ = .{ allocator, tvg_bytes, options };
-    @compileError("mesh.tvgMeshes: implementation follows (dvui #1056)");
+    return @import("tvg_meshes.zig").tvgMeshes(allocator, tvg_bytes, options);
 }
