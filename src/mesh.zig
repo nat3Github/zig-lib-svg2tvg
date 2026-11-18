@@ -164,7 +164,7 @@ pub const StrokeOptions = struct {
 /// All contours in one mesh: a direct strip where nothing overlaps visibly, else the outline
 /// filled nonzero.
 pub fn stroke(allocator: Allocator, contours: []const Contour, options: StrokeOptions) Error!Mesh {
-    if (!(options.tolerance > 0)) return error.InvalidInput;
+    try internal.stroke.validateOptions(options);
     for (contours) |contour| if (!internal.contour.isValid(contour)) return error.InvalidInput;
 
     var points: std.ArrayList(Point) = .empty;

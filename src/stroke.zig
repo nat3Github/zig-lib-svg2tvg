@@ -15,10 +15,16 @@ const Vector = @Vector(2, f32);
 const miter_overshoot = 0.03;
 const max_arc_steps = 1024;
 
-/// Width, miter limit and points within `tessellation.max_coordinate_pixels`, else invalid input.
-pub fn validate(polyline: []const Point, options: mesh.StrokeOptions) tessellation.Error!void {
+/// Width and miter limit within `tessellation.max_coordinate_pixels`, else invalid input.
+pub fn validateOptions(options: mesh.StrokeOptions) tessellation.Error!void {
     if (!(options.width > 0 and options.width / 2 <= tessellation.max_coordinate_pixels)) return error.InvalidInput;
     if (!(options.miter_limit >= 1 and options.miter_limit <= tessellation.max_coordinate_pixels)) return error.InvalidInput;
+    if (!(options.tolerance > 0)) return error.InvalidInput;
+}
+
+/// `validateOptions`, and points within `tessellation.max_coordinate_pixels`.
+pub fn validate(polyline: []const Point, options: mesh.StrokeOptions) tessellation.Error!void {
+    try validateOptions(options);
     for (polyline) |point| for (point) |coordinate| {
         if (!(@abs(coordinate) <= tessellation.max_coordinate_pixels)) return error.InvalidInput;
     };
@@ -28,6 +34,7 @@ pub fn validate(polyline: []const Point, options: mesh.StrokeOptions) tessellati
 /// first. Owned by `allocator`.
 fn distinctPoints(allocator: Allocator, polyline: []const Point, closed: bool) error{OutOfMemory}![]Vector {
     var distinct: std.ArrayList(Vector) = try .initCapacity(allocator, polyline.len);
+    errdefer distinct.deinit(allocator);
     for (polyline) |point| {
         if (distinct.items.len == 0 or !nearlyEqual(distinct.getLast(), point)) distinct.appendAssumeCapacity(point);
     }
@@ -122,7 +129,7 @@ const Outliner = struct {
             .round => outliner.radius * (1 - half_turn_cos) <= miter_overshoot * half_turn_cos,
             .miter => half_turn_cos * outliner.options.miter_limit >= 1,
             .bevel => false,
-        } else turn < math.pi / 2.0 and outliner.radius * @tan(turn / 2) <= @min(length(incoming), length(outgoing));
+        } else turn < math.pi / 2.0 and outliner.radius * @sin(turn) <= @min(length(incoming), length(outgoing));
         if (miter_fits) {
             const miter_scale: Vector = @splat(1 / (1 + @cos(turn)));
             try outliner.append(vertex + (incoming_offset + outgoing_offset) * miter_scale);
@@ -200,7 +207,7 @@ pub fn strip(
     options: mesh.StrokeOptions,
 ) tessellation.Error!mesh.Mesh {
     assert(polylines.len == closed.len);
-    assert(options.tolerance > 0);
+    try validateOptions(options);
     for (polylines) |polyline| try validate(polyline, options);
 
     const radius = options.width / 2;
@@ -422,8 +429,9 @@ const StripBuilder = struct {
         const outgoing_normal: Vector = .{ -outgoing[1], outgoing[0] };
         const outer_fits = half_turn_cos > 0 and switch (builder.options.join) {
             .miter => half_turn_cos * builder.options.miter_limit >= 1,
-            .round => builder.radius * (1 - half_turn_cos) <= builder.options.tolerance * half_turn_cos,
-            .bevel => builder.radius * (1 - half_turn_cos * half_turn_cos) <= builder.options.tolerance * half_turn_cos,
+            // The fade corner on the miter lies furthest outside, so it sets the error.
+            .round => builder.outer * (1 - half_turn_cos) <= builder.options.tolerance * half_turn_cos,
+            .bevel => builder.outer * (1 - half_turn_cos * half_turn_cos) <= builder.options.tolerance * half_turn_cos,
         };
         // The inner miter moves back along both edges, half an edge each leaves room for the other end.
         const inner_fits = half_turn_cos > 0 and
