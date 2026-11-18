@@ -409,10 +409,10 @@ const Line = struct {
         for (att, val) |a, v| {
             try utils.auto_parse_def(@This(), self, Def, a, v);
         }
-        const ax = self.x1 orelse return error.MissingLineParameter;
-        const ay = self.y1 orelse return error.MissingLineParameter;
-        const bx = self.x2 orelse return error.MissingLineParameter;
-        const by = self.y2 orelse return error.MissingLineParameter;
+        const ax = self.x1 orelse 0;
+        const ay = self.y1 orelse 0;
+        const bx = self.x2 orelse 0;
+        const by = self.y2 orelse 0;
         const p1 = Point{
             .x = ax,
             .y = ay,
