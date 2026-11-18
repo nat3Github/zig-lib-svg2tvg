@@ -42,7 +42,7 @@ pub const Mesh = struct {
     }
 };
 
-/// Slices of the caller, exactly as long as the matching size function says.
+/// Slices of the caller, as long as the matching size function says.
 pub const MeshBuffers = struct {
     positions: []Point,
     coverages: []f32,
@@ -150,10 +150,12 @@ pub const ConvexOptions = struct {
     center: ?Point = null,
 };
 
+/// Buffer sizes for `fillConvex`, at least what it writes. Nothing for invalid contours.
 pub const convexSize = convex.convexSize;
 
 /// Allocation free, for the hot path of widgets. `contour` must be convex, either orientation;
-/// curves flatten like `circle_arc` within half a pixel.
+/// curves flatten like `circle_arc` within half a pixel. Returns the size written to the front of
+/// the buffers.
 pub const fillConvex = convex.fillConvex;
 
 // Stroke

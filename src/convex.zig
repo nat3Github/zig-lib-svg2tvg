@@ -8,13 +8,10 @@ const contour_points = @import("contour.zig");
 const Point = mesh.Point;
 const Vector = @Vector(2, f32);
 
+/// At least the size `fillConvex` writes, nothing for an invalid contour.
 pub fn convexSize(contour: mesh.Contour, options: mesh.ConvexOptions) mesh.MeshSize {
-    return sizeForPoints(pointCount(contour), options);
-}
-
-fn pointCount(contour: mesh.Contour) usize {
-    var stream: contour_points.Points = .{ .contour = contour, .tolerance = contour_points.convex_tolerance };
-    return stream.count() catch unreachable;
+    if (!contour_points.isValid(contour)) return .{ .vertices = 0, .indices = 0 };
+    return sizeForPoints(contour_points.maxPointCount(contour, contour_points.convex_tolerance), options);
 }
 
 pub fn sizeForPoints(point_count: usize, options: mesh.ConvexOptions) mesh.MeshSize {
@@ -31,12 +28,28 @@ pub fn sizeForPoints(point_count: usize, options: mesh.ConvexOptions) mesh.MeshS
     return size;
 }
 
-pub fn fillConvex(contour: mesh.Contour, options: mesh.ConvexOptions, buffers: mesh.MeshBuffers) void {
-    const count = pointCount(contour);
-    const polygon = prepare(count, options, buffers) orelse return;
-    var stream: contour_points.Points = .{ .contour = contour, .tolerance = contour_points.convex_tolerance };
-    for (polygon) |*point| point.* = (stream.next() catch unreachable).?;
-    walk(polygon, options, buffers);
+/// Flattens the contour once into the buffers, sized by `convexSize`, and returns the size written.
+pub fn fillConvex(contour: mesh.Contour, options: mesh.ConvexOptions, buffers: mesh.MeshBuffers) mesh.MeshSize {
+    const nothing: mesh.MeshSize = .{ .vertices = 0, .indices = 0 };
+    if (buffers.positions.len == 0 or !contour_points.isValid(contour)) return nothing;
+    const center_vertices: usize = if (options.center != null) 1 else 0;
+    const max_count = (buffers.positions.len - center_vertices) / @as(usize, if (options.fade > 0) 2 else 1);
+    const slot = prepare(max_count, options, buffers) orelse return nothing;
+    const Writer = struct {
+        polygon: []Point,
+        written: usize = 0,
+
+        fn emit(writer: *@This(), point: Point) contour_points.Error!void {
+            assert(writer.written < writer.polygon.len);
+            writer.polygon[writer.written] = point;
+            writer.written += 1;
+        }
+    };
+    var writer: Writer = .{ .polygon = slot };
+    contour_points.forEachPoint(contour, .{ .tolerance = contour_points.convex_tolerance }, &writer, Writer.emit) catch unreachable;
+    if (writer.written < 3) return nothing;
+    walk(slot[0..writer.written], options, buffers);
+    return sizeForPoints(writer.written, options);
 }
 
 /// `fillConvex` of a flattened polygon, sized by `sizeForPoints`.
@@ -80,9 +93,10 @@ fn walk(polygon: []Point, options: mesh.ConvexOptions, buffers: mesh.MeshBuffers
     const count = polygon.len;
     const size = sizeForPoints(count, options);
     var area: f32 = 0;
-    for (polygon, 0..) |point, index| {
-        const next = polygon[(index + 1) % count];
-        area += point[0] * next[1] - next[0] * point[1];
+    var area_previous = polygon[count - 1];
+    for (polygon) |point| {
+        area += area_previous[0] * point[1] - point[0] * area_previous[1];
+        area_previous = point;
     }
     // Normals and fan winding assume a counterclockwise walk on screen.
     if (area > 0) std.mem.reverse(Point, polygon);
@@ -91,16 +105,14 @@ fn walk(polygon: []Point, options: mesh.ConvexOptions, buffers: mesh.MeshBuffers
     const vertices_per_point: u32 = if (has_fade) 2 else 1;
     const center_index: u32 = @intCast(size.vertices - 1);
     const first: Vector = polygon[0];
-    var previous: Vector = polygon[count - 1];
     var current: Vector = first;
+    var incoming = normalize(@as(Vector, polygon[count - 1]) - first);
+    var previous_vertex: u32 = @intCast((count - 1) * vertices_per_point);
     var vertex_count: usize = 0;
     var index_count: usize = 0;
     for (0..count) |index| {
         const next: Vector = if (index + 1 < count) polygon[index + 1] else first;
-        const previous_vertex: u32 = @intCast(((index + count - 1) % count) * vertices_per_point);
         const current_vertex: u32 = @intCast(index * vertices_per_point);
-
-        const incoming = normalize(previous - current);
         const outgoing = normalize(current - next);
         var normal: Vector = .{ (incoming[1] + outgoing[1]) / 2, (-incoming[0] - outgoing[0]) / 2 };
 
@@ -136,8 +148,9 @@ fn walk(polygon: []Point, options: mesh.ConvexOptions, buffers: mesh.MeshBuffers
             };
             index_count += 6;
         }
-        previous = current;
         current = next;
+        incoming = outgoing;
+        previous_vertex = current_vertex;
     }
 
     if (options.center) |center| {

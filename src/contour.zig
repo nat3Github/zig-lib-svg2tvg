@@ -48,141 +48,156 @@ fn valueIsValid(value: f32) bool {
 /// `drop_closing_point`. Fails with TooComplex once `points` would grow past `max_points`.
 pub fn append(allocator: Allocator, contour: Contour, drop_closing_point: bool, tolerance: f32, max_points: usize, points: *std.ArrayList(Point)) Error!void {
     assert(tolerance > 0);
-    var scratch: std.ArrayList(Point) = .empty;
-    defer scratch.deinit(allocator);
-    var stream: Points = .{
-        .contour = contour,
-        .tolerance = tolerance,
-        .drop_closing_point = drop_closing_point,
-        .bezier_scratch = .{ .allocator = allocator, .points = &scratch, .max_points = max_points },
-    };
-    while (try stream.next()) |point| {
-        if (points.items.len >= max_points) return error.TooComplex;
-        try points.append(allocator, point);
-    }
-}
-
-/// The points of a contour in order: no exact repeats, no closing point equal to the start unless
-/// kept for an open stroke, and no circle_arc end point within half a pixel of the next point.
-pub const Points = struct {
-    contour: Contour,
-    tolerance: f32,
-    drop_closing_point: bool = true,
-    /// Béziers take Wang plus halving through this list, else uniform Wang steps.
-    bezier_scratch: ?BezierScratch = null,
-
-    segment_index: usize = 0,
-    segment: SegmentPoints = .{ .single = null },
-    started: bool = false,
-    current: Point = undefined,
-    ahead: ?Item = null,
-    last_emitted: ?Point = null,
-
-    pub const BezierScratch = struct {
+    const Appender = struct {
         allocator: Allocator,
         points: *std.ArrayList(Point),
         max_points: usize,
+
+        fn emit(appender: @This(), point: Point) Error!void {
+            if (appender.points.items.len >= appender.max_points) return error.TooComplex;
+            try appender.points.append(appender.allocator, point);
+        }
     };
+    try forEachPoint(contour, .{
+        .tolerance = tolerance,
+        .drop_closing_point = drop_closing_point,
+        .bezier_scratch = .{ .allocator = allocator, .max_points = max_points },
+    }, Appender{ .allocator = allocator, .points = points, .max_points = max_points }, Appender.emit);
+}
 
-    const Item = struct { point: Point, mergeable: bool = false };
-
-    pub fn next(stream: *Points) Error!?Point {
-        while (true) {
-            const item = stream.ahead orelse (try stream.raw()) orelse return null;
-            stream.ahead = try stream.raw();
-            const following: ?Point = if (stream.ahead) |ahead| ahead.point else if (stream.drop_closing_point) stream.contour.start else null;
-            if (stream.last_emitted) |last| {
-                if (equal(item.point, last)) continue;
-                if (stream.ahead == null and stream.drop_closing_point and equal(item.point, stream.contour.start)) continue;
-            }
-            if (item.mergeable) if (following) |point| if (distanceSquared(item.point, point) < circle_arc_end_merge * circle_arc_end_merge) continue;
-            stream.last_emitted = item.point;
-            return item.point;
-        }
-    }
-
-    pub fn count(stream: *Points) Error!usize {
-        var point_count: usize = 0;
-        while (try stream.next()) |_| point_count += 1;
-        return point_count;
-    }
-
-    fn raw(stream: *Points) Error!?Item {
-        if (!stream.started) {
-            stream.started = true;
-            stream.current = stream.contour.start;
-            return .{ .point = stream.contour.start };
-        }
-        while (true) {
-            if (stream.segment.next()) |item| {
-                stream.current = item.point;
-                return item;
-            }
-            if (stream.segment_index == stream.contour.segments.len) return null;
-            const segment = stream.contour.segments[stream.segment_index];
-            stream.segment_index += 1;
-            stream.segment = try stream.startSegment(segment);
-        }
-    }
-
-    fn startSegment(stream: *Points, segment: Segment) Error!SegmentPoints {
-        const from = stream.current;
-        return switch (segment) {
-            .line => |end| .{ .single = end },
-            .circle_arc => |arc| .{ .circle_arc = .init(arc.center, arc.radius, arc.start_angle, arc.end_angle) },
-            .arc => |arc| .{ .ellipse_arc = .init(from, arc.radius, arc.rotation, arc.large_arc, arc.sweep, arc.end, stream.tolerance) },
-            .quadratic => |curve| try stream.startBezier(&.{ from, curve.control, curve.end }),
-            .cubic => |curve| try stream.startBezier(&.{ from, curve.control_0, curve.control_1, curve.end }),
-        };
-    }
-
-    fn startBezier(stream: *Points, controls: []const Point) Error!SegmentPoints {
-        const scratch = stream.bezier_scratch orelse return .{ .uniform_bezier = .init(controls, stream.tolerance) };
-        scratch.points.clearRetainingCapacity();
-        var tvg_controls: [4]mesh.tvg.Point = undefined;
-        for (tvg_controls[0..controls.len], controls) |*tvg_control, control| tvg_control.* = .{ .x = control[0], .y = control[1] };
-        var flat: std.ArrayList(mesh.tvg.Point) = .empty;
-        defer flat.deinit(scratch.allocator);
-        try arrangement.flattenBezier(scratch.allocator, tvg_controls[0..controls.len], stream.tolerance, scratch.max_points, &flat);
-        assert(flat.items.len > 0);
-        try scratch.points.ensureTotalCapacity(scratch.allocator, flat.items.len);
-        var previous: Vector = controls[0];
-        // Inner points move half the local chord sag outward, so the polyline straddles the curve.
-        for (flat.items[0 .. flat.items.len - 1], flat.items[1..]) |point, following| {
-            const here: Vector = .{ point.x, point.y };
-            const middle = (previous + Vector{ following.x, following.y }) * @as(Vector, @splat(0.5));
-            scratch.points.appendAssumeCapacity(here + (here - middle) / @as(Vector, @splat(8)));
-            previous = here;
-        }
-        const end = flat.items[flat.items.len - 1];
-        scratch.points.appendAssumeCapacity(.{ end.x, end.y });
-        return .{ .list = .{ .points = scratch.points.items } };
-    }
+pub const Flattening = struct {
+    tolerance: f32,
+    drop_closing_point: bool = true,
+    /// Béziers take Wang plus halving with this allocator, else uniform Wang steps.
+    bezier_scratch: ?BezierScratch = null,
 };
 
-const SegmentPoints = union(enum) {
-    single: ?Point,
-    list: struct { points: []const Point, index: usize = 0 },
-    circle_arc: CircleArc,
-    ellipse_arc: EllipseArc,
-    uniform_bezier: UniformBezier,
+pub const BezierScratch = struct {
+    allocator: Allocator,
+    max_points: usize,
+};
 
-    fn next(segment: *SegmentPoints) ?Points.Item {
-        switch (segment.*) {
-            .single => |*point| {
-                const value = point.* orelse return null;
-                point.* = null;
-                return .{ .point = value };
+const Item = struct { point: Point, mergeable: bool = false };
+
+/// Calls `emit` with the points of a contour in order: no exact repeats, no closing point equal to
+/// the start unless kept for an open stroke, and no circle_arc end point within half a pixel of the
+/// next point. A push loop, so the state stays in registers on the hot path of `fillConvex`.
+pub fn forEachPoint(contour: Contour, flattening: Flattening, context: anytype, comptime emit: fn (@TypeOf(context), Point) Error!void) Error!void {
+    var filter: Filter(@TypeOf(context), emit) = .{ .context = context, .start = contour.start, .drop_closing_point = flattening.drop_closing_point };
+    try filter.push(.{ .point = contour.start });
+    for (contour.segments) |segment| {
+        const from = filter.pending.?.point;
+        switch (segment) {
+            .line => |end| try filter.push(.{ .point = end }),
+            .circle_arc => |arc| {
+                var points: CircleArc = .init(arc.center, arc.radius, arc.start_angle, arc.end_angle);
+                while (points.next()) |item| try filter.push(item);
             },
-            .list => |*list| {
-                if (list.index == list.points.len) return null;
-                list.index += 1;
-                return .{ .point = list.points[list.index - 1] };
+            .arc => |arc| {
+                var points: EllipseArc = .init(from, arc.radius, arc.rotation, arc.large_arc, arc.sweep, arc.end, flattening.tolerance);
+                while (points.next()) |item| try filter.push(item);
             },
-            inline .circle_arc, .ellipse_arc, .uniform_bezier => |*state| return state.next(),
+            .quadratic => |curve| try pushBezier(&filter, flattening, &.{ from, curve.control, curve.end }),
+            .cubic => |curve| try pushBezier(&filter, flattening, &.{ from, curve.control_0, curve.control_1, curve.end }),
         }
     }
-};
+    try filter.finish();
+}
+
+/// At least as many points as `forEachPoint` emits, with trigonometry per segment only. For a
+/// valid contour.
+pub fn maxPointCount(contour: Contour, tolerance: f32) usize {
+    var count: usize = 1;
+    var previous_end = contour.start;
+    var previous_arc: ?CircleArc = null;
+    for (contour.segments) |segment| {
+        const from = if (previous_arc) |arc| arc.pointAt(arc.end_angle) else previous_end;
+        switch (segment) {
+            .line => |end| {
+                count += 1;
+                previous_end = end;
+                previous_arc = null;
+            },
+            .circle_arc => |arc| {
+                const points: CircleArc = .init(arc.center, arc.radius, arc.start_angle, arc.end_angle);
+                count += points.maxPointCount();
+                previous_arc = points;
+            },
+            .arc => |arc| {
+                const points: EllipseArc = .init(from, arc.radius, arc.rotation, arc.large_arc, arc.sweep, arc.end, tolerance);
+                count += points.step_count + 1;
+                previous_end = arc.end;
+                previous_arc = null;
+            },
+            .quadratic => |curve| {
+                count += UniformBezier.init(&.{ from, curve.control, curve.end }, tolerance).step_count;
+                previous_end = curve.end;
+                previous_arc = null;
+            },
+            .cubic => |curve| {
+                count += UniformBezier.init(&.{ from, curve.control_0, curve.control_1, curve.end }, tolerance).step_count;
+                previous_end = curve.end;
+                previous_arc = null;
+            },
+        }
+    }
+    return count;
+}
+
+/// Holds back the newest raw point until the one after it is known.
+fn Filter(comptime Context: type, comptime emit: fn (Context, Point) Error!void) type {
+    return struct {
+        context: Context,
+        start: Point,
+        drop_closing_point: bool,
+        pending: ?Item = null,
+        last_emitted: ?Point = null,
+
+        inline fn push(filter: *@This(), item: Item) Error!void {
+            if (filter.pending) |pending| try filter.decide(pending, item.point, false);
+            filter.pending = item;
+        }
+
+        fn finish(filter: *@This()) Error!void {
+            const pending = filter.pending orelse return;
+            try filter.decide(pending, if (filter.drop_closing_point) filter.start else null, true);
+        }
+
+        inline fn decide(filter: *@This(), item: Item, following: ?Point, is_last: bool) Error!void {
+            if (filter.last_emitted) |last| {
+                if (equal(item.point, last)) return;
+                if (is_last and filter.drop_closing_point and equal(item.point, filter.start)) return;
+            }
+            if (item.mergeable) if (following) |point| if (distanceSquared(item.point, point) < circle_arc_end_merge * circle_arc_end_merge) return;
+            filter.last_emitted = item.point;
+            try emit(filter.context, item.point);
+        }
+    };
+}
+
+fn pushBezier(filter: anytype, flattening: Flattening, controls: []const Point) Error!void {
+    const scratch = flattening.bezier_scratch orelse {
+        var points: UniformBezier = .init(controls, flattening.tolerance);
+        while (points.next()) |item| try filter.push(item);
+        return;
+    };
+    var tvg_controls: [4]mesh.tvg.Point = undefined;
+    for (tvg_controls[0..controls.len], controls) |*tvg_control, control| tvg_control.* = .{ .x = control[0], .y = control[1] };
+    var flat: std.ArrayList(mesh.tvg.Point) = .empty;
+    defer flat.deinit(scratch.allocator);
+    try arrangement.flattenBezier(scratch.allocator, tvg_controls[0..controls.len], flattening.tolerance, scratch.max_points, &flat);
+    assert(flat.items.len > 0);
+    var previous: Vector = controls[0];
+    // Inner points move half the local chord sag outward, so the polyline straddles the curve.
+    for (flat.items[0 .. flat.items.len - 1], flat.items[1..]) |point, following| {
+        const here: Vector = .{ point.x, point.y };
+        const middle = (previous + Vector{ following.x, following.y }) * @as(Vector, @splat(0.5));
+        try filter.push(.{ .point = here + (here - middle) / @as(Vector, @splat(8)) });
+        previous = here;
+    }
+    const end = flat.items[flat.items.len - 1];
+    try filter.push(.{ .point = .{ end.x, end.y } });
+}
 
 /// The steps of dvui's `Path.Builder.addArc` with the same f32 arithmetic: the start, every multiple
 /// of the step angle strictly between, then the end, which may merge into the next point.
@@ -204,11 +219,20 @@ const CircleArc = struct {
         };
     }
 
+    /// Start, end and the multiples of the step strictly between, which lie above the end
+    /// angle minus 0.001.
+    fn maxPointCount(arc: *const CircleArc) usize {
+        if (arc.radius == 0) return 1;
+        const grid_points = @floor((arc.angle - arc.end_angle + 0.001) / arc.step) + 1;
+        assert(grid_points < 1 << 30);
+        return 2 + @as(usize, @intFromFloat(@max(0, grid_points)));
+    }
+
     fn pointAt(arc: *const CircleArc, angle: f32) Point {
         return .{ arc.center[0] + arc.radius * @cos(angle), arc.center[1] + arc.radius * @sin(angle) };
     }
 
-    fn next(arc: *CircleArc) ?Points.Item {
+    fn next(arc: *CircleArc) ?Item {
         switch (arc.stage) {
             .start => {
                 if (arc.radius == 0) {
@@ -298,7 +322,7 @@ const EllipseArc = struct {
         };
     }
 
-    fn next(arc: *EllipseArc) ?Points.Item {
+    fn next(arc: *EllipseArc) ?Item {
         if (arc.step < arc.step_count) {
             const angle = arc.start_angle + arc.sweep_angle * @as(f32, @floatFromInt(arc.step)) / @as(f32, @floatFromInt(arc.step_count));
             arc.step += 1;
@@ -337,7 +361,7 @@ const UniformBezier = struct {
         return bezier;
     }
 
-    fn next(bezier: *UniformBezier) ?Points.Item {
+    fn next(bezier: *UniformBezier) ?Item {
         if (bezier.step > bezier.step_count) return null;
         defer bezier.step += 1;
         const count = bezier.control_count;
