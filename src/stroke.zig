@@ -248,6 +248,8 @@ pub fn strip(allocator: Allocator, polylines: []const Polyline, options: mesh.St
         if (options.translucent and drawn_polylines > 1) return null;
         if (pts.len == 1) {
             if (options.cap == .butt) continue;
+            // A square cap thinner than the fade puts both stations inside the point, they cross.
+            if (options.translucent and options.cap == .square and fade / 2 > radius) return null;
             const start = try builder.startCap(pts[0], .{ 1, 0 });
             try builder.connect(start, try builder.endCap(pts[0], .{ 1, 0 }));
             continue;
