@@ -44,24 +44,30 @@ fn valueIsValid(value: f32) bool {
     return @abs(value) <= mesh.max_coordinate;
 }
 
-/// Appends the flattened contour to `points` without its closing point. Fails with TooComplex once
-/// `points` would grow past `max_points`.
-pub fn append(allocator: Allocator, contour: Contour, tolerance: f32, max_points: usize, points: *std.ArrayList(Point)) Error!void {
+/// Appends the flattened contour to `points`, without a closing point equal to the start when
+/// `drop_closing_point`. Fails with TooComplex once `points` would grow past `max_points`.
+pub fn append(allocator: Allocator, contour: Contour, drop_closing_point: bool, tolerance: f32, max_points: usize, points: *std.ArrayList(Point)) Error!void {
     assert(tolerance > 0);
     var scratch: std.ArrayList(Point) = .empty;
     defer scratch.deinit(allocator);
-    var stream: Points = .{ .contour = contour, .tolerance = tolerance, .bezier_scratch = .{ .allocator = allocator, .points = &scratch, .max_points = max_points } };
+    var stream: Points = .{
+        .contour = contour,
+        .tolerance = tolerance,
+        .drop_closing_point = drop_closing_point,
+        .bezier_scratch = .{ .allocator = allocator, .points = &scratch, .max_points = max_points },
+    };
     while (try stream.next()) |point| {
         if (points.items.len >= max_points) return error.TooComplex;
         try points.append(allocator, point);
     }
 }
 
-/// The points of a closed contour in order: no exact repeats, no closing point equal to the start,
-/// and no circle_arc end point within half a pixel of the next point.
+/// The points of a contour in order: no exact repeats, no closing point equal to the start unless
+/// kept for an open stroke, and no circle_arc end point within half a pixel of the next point.
 pub const Points = struct {
     contour: Contour,
     tolerance: f32,
+    drop_closing_point: bool = true,
     /// Béziers take Wang plus halving through this list, else uniform Wang steps.
     bezier_scratch: ?BezierScratch = null,
 
@@ -84,12 +90,12 @@ pub const Points = struct {
         while (true) {
             const item = stream.ahead orelse (try stream.raw()) orelse return null;
             stream.ahead = try stream.raw();
-            const following = if (stream.ahead) |ahead| ahead.point else stream.contour.start;
+            const following: ?Point = if (stream.ahead) |ahead| ahead.point else if (stream.drop_closing_point) stream.contour.start else null;
             if (stream.last_emitted) |last| {
                 if (equal(item.point, last)) continue;
-                if (stream.ahead == null and equal(item.point, stream.contour.start)) continue;
+                if (stream.ahead == null and stream.drop_closing_point and equal(item.point, stream.contour.start)) continue;
             }
-            if (item.mergeable and distanceSquared(item.point, following) < circle_arc_end_merge * circle_arc_end_merge) continue;
+            if (item.mergeable) if (following) |point| if (distanceSquared(item.point, point) < circle_arc_end_merge * circle_arc_end_merge) continue;
             stream.last_emitted = item.point;
             return item.point;
         }

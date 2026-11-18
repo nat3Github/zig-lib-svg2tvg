@@ -34,7 +34,6 @@ const Allocator = std.mem.Allocator;
 pub const arrangement = @import("arrangement.zig");
 pub const tvg = @import("tinyvg/tinyvg.zig");
 const antialias = @import("tessellation_antialias.zig");
-pub const strokeOutline = @import("stroke.zig").strokeOutline;
 const GridPoint = arrangement.GridPoint;
 
 pub const Point = [2]f32;

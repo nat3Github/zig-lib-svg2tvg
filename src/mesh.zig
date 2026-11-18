@@ -15,6 +15,7 @@ pub const internal = struct {
     pub const tessellation = @import("tessellation.zig");
     pub const arrangement = @import("arrangement.zig");
     pub const contour = @import("contour.zig");
+    pub const stroke = @import("stroke.zig");
 };
 const convex = @import("convex.zig");
 
@@ -81,8 +82,8 @@ pub const FillRule = internal.arrangement.FillRule;
 
 pub const FillOptions = struct {
     fill_rule: FillRule = .nonzero,
-    /// Width in pixels of the fade to transparent, centered on the edge. 0 or 1 for now.
-    fade: f32 = 1,
+    /// A 1 px fade to transparent centered on the edge.
+    anti_alias: bool = true,
     /// Largest distance of the flattened contours from the curves.
     tolerance: f32 = 0.25,
     limits: Limits = .{},
@@ -92,7 +93,6 @@ pub const FillOptions = struct {
 /// Any contours: concave, with holes, self-intersecting. Convex single contours take the
 /// fan of `fillConvex`.
 pub fn fill(allocator: Allocator, contours: []const Contour, options: FillOptions) Error!Mesh {
-    const anti_alias = if (options.fade == 0) false else if (options.fade == 1) true else return error.InvalidInput;
     if (!(options.tolerance > 0)) return error.InvalidInput;
     for (contours) |contour| if (!internal.contour.isValid(contour)) return error.InvalidInput;
 
@@ -101,11 +101,11 @@ pub fn fill(allocator: Allocator, contours: []const Contour, options: FillOption
     const ends = try allocator.alloc(usize, contours.len);
     defer allocator.free(ends);
     for (contours, ends) |contour, *end| {
-        try internal.contour.append(allocator, contour, options.tolerance, options.limits.max_points, &points);
+        try internal.contour.append(allocator, contour, true, options.tolerance, options.limits.max_points, &points);
         end.* = points.items.len;
     }
     if (contours.len == 1 and convex.isConvex(points.items)) {
-        const convex_options: ConvexOptions = .{ .fade = options.fade };
+        const convex_options: ConvexOptions = .{ .fade = if (options.anti_alias) 1 else 0 };
         const size = convex.sizeForPoints(points.items.len, convex_options);
         const positions = try allocator.alloc(Point, size.vertices);
         errdefer allocator.free(positions);
@@ -120,7 +120,7 @@ pub fn fill(allocator: Allocator, contours: []const Contour, options: FillOption
     for (polygons, ends, 0..) |*polygon, end, index| polygon.* = points.items[if (index == 0) 0 else ends[index - 1]..end];
     return internal.tessellation.fill(allocator, polygons, .{
         .fill_rule = options.fill_rule,
-        .anti_alias = anti_alias,
+        .anti_alias = options.anti_alias,
         .limits = options.limits,
         .work = options.work,
     });
@@ -151,7 +151,9 @@ pub const StrokeOptions = struct {
     /// Miter length over width beyond which a miter becomes a bevel, as SVG stroke-miterlimit.
     miter_limit: f32 = 4,
     cap: Cap = .butt,
-    fade: f32 = 1,
+    /// A 1 px fade to transparent centered on the edge. Strokes thinner than the fade keep it and
+    /// lower their coverage instead.
+    anti_alias: bool = true,
     /// Overlapping triangles would show, so every pixel must be covered once.
     translucent: bool = false,
     tolerance: f32 = 0.25,
@@ -162,8 +164,41 @@ pub const StrokeOptions = struct {
 /// All contours in one mesh: a direct strip where nothing overlaps visibly, else the outline
 /// filled nonzero.
 pub fn stroke(allocator: Allocator, contours: []const Contour, options: StrokeOptions) Error!Mesh {
-    _ = .{ allocator, contours, options };
-    @compileError("mesh.stroke: implementation follows (dvui #1056)");
+    if (!(options.tolerance > 0)) return error.InvalidInput;
+    for (contours) |contour| if (!internal.contour.isValid(contour)) return error.InvalidInput;
+
+    var points: std.ArrayList(Point) = .empty;
+    defer points.deinit(allocator);
+    const polylines = try allocator.alloc([]const Point, contours.len);
+    defer allocator.free(polylines);
+    const closed = try allocator.alloc(bool, contours.len);
+    defer allocator.free(closed);
+    const ends = try allocator.alloc(usize, contours.len);
+    defer allocator.free(ends);
+    for (contours, ends, closed) |contour, *end, *is_closed| {
+        try internal.contour.append(allocator, contour, contour.closed, options.tolerance, options.limits.max_points, &points);
+        end.* = points.items.len;
+        is_closed.* = contour.closed;
+    }
+    for (polylines, ends, 0..) |*polyline, end, index| polyline.* = points.items[if (index == 0) 0 else ends[index - 1]..end];
+    if (!options.translucent) return internal.stroke.strip(allocator, polylines, closed, options);
+
+    var outline_points: std.ArrayList(Point) = .empty;
+    defer outline_points.deinit(allocator);
+    var outline_ends: std.ArrayList(usize) = .empty;
+    defer outline_ends.deinit(allocator);
+    for (polylines, closed) |polyline, is_closed| {
+        try internal.stroke.strokeOutline(allocator, polyline, is_closed, options, options.limits.max_points, &outline_points, &outline_ends);
+    }
+    const outlines = try allocator.alloc([]const Point, outline_ends.items.len);
+    defer allocator.free(outlines);
+    for (outlines, outline_ends.items, 0..) |*outline, end, index| outline.* = outline_points.items[if (index == 0) 0 else outline_ends.items[index - 1]..end];
+    return internal.tessellation.fill(allocator, outlines, .{
+        .fill_rule = .nonzero,
+        .anti_alias = options.anti_alias,
+        .limits = options.limits,
+        .work = options.work,
+    });
 }
 
 // TinyVG
@@ -194,7 +229,7 @@ pub const TvgOptions = struct {
     line_width: ?f32 = null,
     /// False draws only the strokes.
     fills: bool = true,
-    fade: f32 = 1,
+    anti_alias: bool = true,
     tolerance: f32 = 0.25,
     /// Shared by the whole document.
     limits: Limits = .{},
