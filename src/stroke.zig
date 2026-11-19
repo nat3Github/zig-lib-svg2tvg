@@ -203,8 +203,8 @@ fn turnAngle(incoming: Vector, outgoing: Vector) f32 {
 /// The mesh of a stroke written directly: one station of core and fade vertices across every
 /// point, quads between stations, and fans for wide joins and round caps. Stations at gentle
 /// joins are shared by both edges; where the inner side would fold back the strip splits and a
-/// patch fills the outer wedge. The fade is centered on the edge, strokes thinner than it get
-/// core coverage 2 width / (width + fade), which keeps their ink. Overlapping pieces cover a pixel twice, so for `options.translucent`
+/// patch fills the outer wedge. The fade lies as `mesh.StrokeOptions.fade` says, strokes thinner
+/// than it get core coverage 2 width / (width + min(fade, 1)), which keeps their ink. Overlapping pieces cover a pixel twice, so for `options.translucent`
 /// it returns null unless the strokes are one polyline turning one way, an open one by at most
 /// half a turn and a closed one once around, with every join shared and end segments longer than
 /// the fade at butt caps.
@@ -213,12 +213,16 @@ pub fn strip(allocator: Allocator, polylines: []const Polyline, options: mesh.St
     for (polylines) |polyline| try validate(polyline.points, options);
 
     const radius = options.width / 2;
-    const fade: f32 = if (options.anti_alias) 1 else 0;
+    const fade = options.fade;
+    const inside = @min(0.5, fade / 2);
+    // Thin strokes keep the ink of a 1 px fade, a wider one adds to it.
+    const ink_fade = @min(1, fade);
     var builder: StripBuilder = .{
         .allocator = allocator,
-        .core = @max(0, radius - fade / 2),
-        .outer = radius + fade / 2,
-        .core_coverage = if (options.width < fade) 2 * options.width / (options.width + fade) else 1,
+        .core = @max(0, radius - inside),
+        .inside = inside,
+        .outer = radius + if (fade <= 1) fade / 2 else fade - 0.5,
+        .core_coverage = if (options.width < ink_fade) 2 * options.width / (options.width + ink_fade) else 1,
         .has_fade = fade > 0,
         .radius = radius,
         .options = options,
@@ -249,12 +253,12 @@ pub fn strip(allocator: Allocator, polylines: []const Polyline, options: mesh.St
         if (pts.len == 1) {
             if (options.cap == .butt) continue;
             // A square cap thinner than the fade puts both stations inside the point, they cross.
-            if (options.translucent and options.cap == .square and fade / 2 > radius) return null;
+            if (options.translucent and options.cap == .square and inside > radius) return null;
             const start = try builder.startCap(pts[0], .{ 1, 0 });
             try builder.connect(start, try builder.endCap(pts[0], .{ 1, 0 }));
             continue;
         }
-        const segments = segment_buffer[0 .. if (is_closed) pts.len else pts.len - 1];
+        const segments = segment_buffer[0..if (is_closed) pts.len else pts.len - 1];
         for (segments, 0..) |*segment, index| {
             const chord = pts[(index + 1) % pts.len] - pts[index];
             const chord_length = length(chord);
@@ -264,7 +268,7 @@ pub fn strip(allocator: Allocator, polylines: []const Polyline, options: mesh.St
         if (options.translucent) {
             if (!turnsOnce(segments, is_closed)) return null;
             // Butt and thin square caps put their last station inside the end, two of them must not cross.
-            const cap_inset = fade / 2 - if (options.cap == .square) radius else 0;
+            const cap_inset = inside - if (options.cap == .square) radius else 0;
             if (!is_closed and cap_inset > 0 and !(@min(segments[0].length, segments[segments.len - 1].length) >= 2 * cap_inset)) return null;
         }
         (if (is_closed) builder.closedPolyline(pts, segments) else builder.openPolyline(pts, segments)) catch |err| switch (err) {
@@ -317,6 +321,8 @@ const StripBuilder = struct {
     allocator: Allocator,
     /// Half width of full coverage and of the fade's outer edge.
     core: f32,
+    /// Part of the fade inside the stroke's edge.
+    inside: f32,
     outer: f32,
     core_coverage: f32,
     has_fade: bool,
@@ -462,10 +468,9 @@ const StripBuilder = struct {
             return end;
         }
         const extension: f32 = if (builder.options.cap == .square) builder.radius else 0;
-        const half_fade = (builder.outer - builder.radius);
-        const end = try builder.plainStation(point + direction * @as(Vector, @splat(extension - half_fade)), normal, builder.core_coverage);
+        const end = try builder.plainStation(point + direction * @as(Vector, @splat(extension - builder.inside)), normal, builder.core_coverage);
         if (!builder.has_fade) return end;
-        const beyond = try builder.plainStation(point + direction * @as(Vector, @splat(extension + half_fade)), normal, 0);
+        const beyond = try builder.plainStation(point + direction * @as(Vector, @splat(extension + builder.outer - builder.radius)), normal, 0);
         try builder.connect(end, beyond);
         return end;
     }

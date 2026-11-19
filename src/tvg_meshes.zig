@@ -140,7 +140,7 @@ const Document = struct {
         if (!document.options.fills or contours.len == 0) return;
         const built = try mesh.fill(document.allocator, contours, .{
             .fill_rule = fill_rule,
-            .anti_alias = document.options.anti_alias,
+            .fade = if (document.options.anti_alias) 1 else 0,
             .tolerance = document.options.tolerance,
             .limits = document.options.limits,
             .work = document.work,
@@ -156,7 +156,7 @@ const Document = struct {
             .width = width,
             .join = .round,
             .cap = .round,
-            .anti_alias = document.options.anti_alias,
+            .fade = if (document.options.anti_alias) 1 else 0,
             .translucent = true,
             .tolerance = document.options.tolerance,
             .limits = document.options.limits,

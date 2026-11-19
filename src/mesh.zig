@@ -17,6 +17,7 @@ pub const internal = struct {
     pub const arrangement = @import("arrangement.zig");
     pub const contour = @import("contour.zig");
     pub const stroke = @import("stroke.zig");
+    pub const earcut = @import("earcut.zig");
 };
 const convex = @import("convex.zig");
 
@@ -83,8 +84,14 @@ pub const FillRule = internal.arrangement.FillRule;
 
 pub const FillOptions = struct {
     fill_rule: FillRule = .nonzero,
-    /// A 1 px fade to transparent centered on the edge.
-    anti_alias: bool = true,
+    /// Width in pixels of the fade to transparent, 0 for hard edges. Up to 1 it is centered on the
+    /// edge, above 1 it starts half a pixel inside and the rest lies outside. A convex single
+    /// contour fades exactly that wide, other fills fade 1 px for any `fade` up to 1.
+    ///
+    /// Fills above 1 that are no convex single contour take earcut: each contour must be simple,
+    /// nested contours alternate between fill and hole whatever `fill_rule` says, and at concave
+    /// corners the fade overlaps itself, which shows with translucent paint.
+    fade: f32 = 1,
     /// Largest distance of the flattened contours from the curves.
     tolerance: f32 = 0.25,
     limits: Limits = .{},
@@ -94,6 +101,7 @@ pub const FillOptions = struct {
 /// Any contours: concave, with holes, self-intersecting. Convex single contours take the
 /// fan of `fillConvex`.
 pub fn fill(allocator: Allocator, contours: []const Contour, options: FillOptions) Error!Mesh {
+    assert(options.fade >= 0 and options.fade <= max_coordinate);
     if (!(options.tolerance > 0)) return error.InvalidInput;
     for (contours) |contour| if (!internal.contour.isValid(contour)) return error.InvalidInput;
 
@@ -106,7 +114,7 @@ pub fn fill(allocator: Allocator, contours: []const Contour, options: FillOption
         end.* = points.items.len;
     }
     if (contours.len == 1 and convex.isConvex(points.items)) {
-        const convex_options: ConvexOptions = .{ .fade = if (options.anti_alias) 1 else 0 };
+        const convex_options: ConvexOptions = .{ .fade = options.fade };
         const size = convex.sizeForPoints(points.items.len, convex_options);
         const positions = try allocator.alloc(Point, size.vertices);
         errdefer allocator.free(positions);
@@ -122,9 +130,10 @@ pub fn fill(allocator: Allocator, contours: []const Contour, options: FillOption
     const polygons = try allocator.alloc([]const Point, contours.len);
     defer allocator.free(polygons);
     for (polygons, ends, 0..) |*polygon, end, index| polygon.* = points.items[if (index == 0) 0 else ends[index - 1]..end];
+    if (options.fade > 1) return internal.earcut.fill(allocator, polygons, options.fade);
     return internal.tessellation.fill(allocator, polygons, .{
         .fill_rule = options.fill_rule,
-        .anti_alias = options.anti_alias,
+        .anti_alias = options.fade > 0,
         .limits = options.limits,
         .work = options.work,
     });
@@ -170,9 +179,14 @@ pub const StrokeOptions = struct {
     /// Miter length over width beyond which a miter becomes a bevel, as SVG stroke-miterlimit.
     miter_limit: f32 = 4,
     cap: Cap = .butt,
-    /// A 1 px fade to transparent centered on the edge. Strokes thinner than the fade keep it and
-    /// lower their coverage instead.
-    anti_alias: bool = true,
+    /// Width in pixels of the fade to transparent on both sides, 0 for hard edges. Up to 1 it is
+    /// centered on the edge, above 1 it starts half a pixel inside and the rest lies outside.
+    /// Strokes thinner than 1 px keep their ink and lower their coverage instead. Translucent
+    /// strokes that overlap themselves fade 1 px for any `fade` up to 1.
+    ///
+    /// Above 1 every stroke takes the direct strip, `translucent` or not: joins, crossings and the
+    /// fade at sharp corners overlap, which shows with translucent paint.
+    fade: f32 = 1,
     /// Overlapping triangles would show, so every pixel must be covered once.
     translucent: bool = false,
     tolerance: f32 = 0.25,
@@ -183,6 +197,7 @@ pub const StrokeOptions = struct {
 /// All contours in one mesh: a direct strip where nothing overlaps visibly, else the outline
 /// filled nonzero.
 pub fn stroke(allocator: Allocator, contours: []const Contour, options: StrokeOptions) Error!Mesh {
+    assert(options.fade >= 0 and options.fade <= max_coordinate);
     try internal.stroke.validateOptions(options);
     for (contours) |contour| if (!internal.contour.isValid(contour)) return error.InvalidInput;
 
@@ -202,8 +217,10 @@ pub fn stroke(allocator: Allocator, contours: []const Contour, options: StrokeOp
         start += polyline.points.len;
     }
     assert(start == points.items.len);
-    if (try internal.stroke.strip(allocator, polylines, options)) |direct| return direct;
-    assert(options.translucent);
+    var strip_options = options;
+    if (options.fade > 1) strip_options.translucent = false;
+    if (try internal.stroke.strip(allocator, polylines, strip_options)) |direct| return direct;
+    assert(strip_options.translucent);
 
     var outline_points: std.ArrayList(Point) = .empty;
     defer outline_points.deinit(allocator);
@@ -217,7 +234,7 @@ pub fn stroke(allocator: Allocator, contours: []const Contour, options: StrokeOp
     for (outlines, outline_ends.items, 0..) |*outline, end, index| outline.* = outline_points.items[if (index == 0) 0 else outline_ends.items[index - 1]..end];
     return internal.tessellation.fill(allocator, outlines, .{
         .fill_rule = .nonzero,
-        .anti_alias = options.anti_alias,
+        .anti_alias = options.fade > 0,
         .limits = options.limits,
         .work = options.work,
     });
